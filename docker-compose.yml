@@ -34,10 +34,11 @@ services:
     ports:
       - "8912:8000"
     volumes:
-      - ./data/db.sqlite3:/app/db.sqlite3
-      - ./data/media:/app/media
+      - ./data:/app/data
       - backend-static:/app/static
     environment:
+      - DATABASE_PATH=/app/data/db.sqlite3
+      - MEDIA_ROOT=/app/data/media
       - DJANGO_DEBUG=True
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
@@ -71,10 +72,11 @@ services:
     container_name: wharttest-celery-worker
     command: celery -A wharttest_django worker -l info --concurrency=4
     volumes:
-      - ./data/db.sqlite3:/app/db.sqlite3
-      - ./data/media:/app/media
+      - ./data:/app/data
       - backend-static:/app/static
     environment:
+      - DATABASE_PATH=/app/data/db.sqlite3
+      - MEDIA_ROOT=/app/data/media
       - DJANGO_DEBUG=True
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
@@ -108,9 +110,10 @@ services:
     container_name: wharttest-celery-beat
     command: celery -A wharttest_django beat -l info --schedule=/app/beat-schedule/celerybeat-schedule
     volumes:
-      - ./data/db.sqlite3:/app/db.sqlite3
+      - ./data:/app/data
       - celery-beat-schedule:/app/beat-schedule
     environment:
+      - DATABASE_PATH=/app/data/db.sqlite3
       - DJANGO_DEBUG=True
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       # Celery配置
@@ -157,6 +160,7 @@ services:
     #   context: ./WHartTest_MCP
     #   dockerfile: Dockerfile
     container_name: wharttest-mcp
+    user: root 
     environment:
       # WHartTest Tools 配置
       - WHARTTEST_BACKEND_URL=${WHARTTEST_BACKEND_URL:-http://backend:8000}
@@ -186,6 +190,7 @@ services:
   playwright-mcp:
     image: mcr.microsoft.com/playwright/mcp
     container_name: wharttest-playwright-mcp
+    user: root  # 以 root 用户运行,确保有权限写入挂载目录
     entrypoint: node
     command: [
       "cli.js",
