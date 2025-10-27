@@ -61,6 +61,9 @@ urlpatterns = [
     path('api/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
 ]
 
-# 开发环境下提供媒体文件访问
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# 提供媒体文件访问
+# 在生产环境中,通常由 Nginx 等 Web 服务器处理静态文件
+# 但在容器化部署中,可能需要 Django 提供媒体文件服务
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# 同时提供静态文件访问
+urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT if hasattr(settings, 'STATIC_ROOT') else None)

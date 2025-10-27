@@ -181,7 +181,8 @@ STATIC_URL = 'static/'
 # Media files (User uploads)
 # https://docs.djangoproject.com/en/5.2/topics/files/
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+# 支持通过环境变量配置 MEDIA_ROOT,用于 Docker 部署
+MEDIA_ROOT = os.environ.get('MEDIA_ROOT', str(BASE_DIR / 'media'))
 
 
 # Default primary key field type
