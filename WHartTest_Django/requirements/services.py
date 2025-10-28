@@ -1963,8 +1963,8 @@ class RequirementReviewService:
         from .models import ReviewReport, ReviewIssue, ModuleReviewResult
 
         try:
-            # 检查文档状态
-            if document.status != 'ready_for_review':
+            # 检查文档状态（允许 ready_for_review 或 reviewing 状态）
+            if document.status not in ['ready_for_review', 'reviewing']:
                 raise ValueError(f"文档状态 {document.status} 不允许开始评审")
 
             # 创建评审报告
@@ -1975,9 +1975,10 @@ class RequirementReviewService:
                 review_type='comprehensive'  # 标记为全面评审
             )
 
-            # 更新文档状态
-            document.status = 'reviewing'
-            document.save()
+            # 确保文档状态为 reviewing
+            if document.status != 'reviewing':
+                document.status = 'reviewing'
+                document.save()
 
             logger.info(f"开始评审文档: {document.title}")
 

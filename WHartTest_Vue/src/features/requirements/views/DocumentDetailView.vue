@@ -850,17 +850,64 @@ const startReview = async () => {
     });
 
     if (response.status === 'success') {
-      Message.success('需求评审已开始');
-      await loadDocument(); // 重新加载文档
+      Message.success('需求评审已启动，正在后台处理...');
+      // 开始轮询文档状态
+      pollDocumentStatus();
     } else {
       Message.error(response.message || '需求评审启动失败');
+      reviewLoading.value = false;
     }
   } catch (error) {
     console.error('需求评审启动失败:', error);
     Message.error('需求评审启动失败');
-  } finally {
     reviewLoading.value = false;
   }
+};
+
+// 轮询文档状态
+const pollDocumentStatus = async () => {
+  const maxAttempts = 60; // 最多轮询60次（5分钟）
+  let attempts = 0;
+  
+  const poll = async () => {
+    attempts++;
+    
+    try {
+      await loadDocument();
+      
+      if (document.value?.status === 'review_completed') {
+        // 评审完成
+        reviewLoading.value = false;
+        Message.success('需求评审已完成！');
+        return;
+      } else if (document.value?.status === 'failed') {
+        // 评审失败
+        reviewLoading.value = false;
+        Message.error('需求评审失败，请重试');
+        return;
+      } else if (attempts >= maxAttempts) {
+        // 超时
+        reviewLoading.value = false;
+        Message.warning('评审时间较长，请稍后刷新页面查看结果');
+        return;
+      }
+      
+      // 继续轮询，每5秒一次
+      setTimeout(poll, 5000);
+    } catch (error) {
+      console.error('轮询文档状态失败:', error);
+      attempts++;
+      if (attempts < maxAttempts) {
+        setTimeout(poll, 5000);
+      } else {
+        reviewLoading.value = false;
+        Message.error('获取评审状态失败');
+      }
+    }
+  };
+  
+  // 首次轮询延迟3秒
+  setTimeout(poll, 3000);
 };
 
 // 模块展开/收起
@@ -1147,11 +1194,12 @@ onMounted(() => {
 .description .description-text {
   margin: 0;
   line-height: 1.6;
+  text-align: left; /* 明确设置文本左对齐 */
   /* 添加文本省略处理 */
   max-height: 4.8em; /* 限制最多显示3行文本 (1.6 * 3) */
   overflow: hidden;
   text-overflow: ellipsis;
-  display: -webkit-inline-box;
+  display: -webkit-box;
   -webkit-line-clamp: 3;
   line-clamp: 3; /* 标准属性 */
   -webkit-box-orient: vertical;

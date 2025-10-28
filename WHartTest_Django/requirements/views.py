@@ -418,11 +418,13 @@ class RequirementDocumentViewSet(BaseModelViewSet):
     @action(detail=True, methods=['post'], url_path='start-review', permission_classes=[CanStartReview])
     def start_review(self, request, pk=None):
         """
-        开始需求评审 - 支持直接评审和模块评审
+        开始需求评审 - 支持直接评审和模块评审（异步处理）
         POST /api/requirements/documents/{id}/start-review/
 
         参数:
         - direct_review: 是否直接评审整个文档 (默认: false)
+        - analysis_type: 分析类型 (默认: comprehensive)
+        - parallel_processing: 是否并行处理 (默认: true)
         """
         document = self.get_object()
 
@@ -445,8 +447,8 @@ class RequirementDocumentViewSet(BaseModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
         else:
-            # 模块评审：必须是ready_for_review状态
-            if document.status != 'ready_for_review':
+            # 模块评审：必须是ready_for_review或failed状态（允许重新评审）
+            if document.status not in ['ready_for_review', 'failed']:
                 return Response(
                     {'error': '文档状态不允许开始评审，请先完成模块拆分'},
                     status=status.HTTP_400_BAD_REQUEST
@@ -469,28 +471,29 @@ class RequirementDocumentViewSet(BaseModelViewSet):
                 'direct_review': direct_review
             }
 
-            # 启动评审服务
-            review_service = RequirementReviewService(user=request.user)
+            # 立即更新文档状态为评审中
+            document.status = 'reviewing'
+            document.save()
 
-            if direct_review:
-                # 直接评审整个文档
-                review_report = review_service.start_direct_review(document, analysis_options)
-                review_type = "直接评审"
-            else:
-                # 模块化评审
-                review_report = review_service.start_comprehensive_review(document, analysis_options)
-                review_type = "模块评审"
+            # 启动异步评审任务
+            from .tasks import execute_requirement_review
+            
+            review_type = 'direct' if direct_review else 'comprehensive'
+            task = execute_requirement_review.delay(
+                str(document.id),
+                analysis_options,
+                review_type,
+                user_id=request.user.id  # 传递用户ID用于获取提示词配置
+            )
 
+            # 立即返回，不等待任务完成
             return Response({
-                'message': f'{review_type}任务已完成',
-                'review_type': review_type,
+                'message': f'评审任务已启动',
+                'task_id': task.id,
+                'review_type': '直接评审' if direct_review else '模块评审',
                 'direct_review': direct_review,
-                'report_id': str(review_report.id),
-                'overall_rating': review_report.overall_rating,
-                'completion_score': review_report.completion_score,
-                'total_issues': review_report.total_issues,
-                'high_priority_issues': review_report.high_priority_issues,
-                'status': document.status
+                'status': 'reviewing',
+                'document_id': str(document.id)
             })
 
         except Exception as e:
@@ -499,8 +502,6 @@ class RequirementDocumentViewSet(BaseModelViewSet):
                 {'error': f'启动评审失败: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'], url_path='module-operations')
     def module_operations(self, request, pk=None):
