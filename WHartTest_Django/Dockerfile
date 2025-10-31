@@ -27,13 +27,13 @@ COPY requirements.txt .
 # 同时安装 supervisor
 RUN uv pip install --system -r requirements.txt supervisor
 
-# 复制 supervisord 配置文件和启动脚本
+# 复制项目文件
+COPY . .
+
+# 复制 supervisord 配置文件和启动脚本(放在 COPY . . 之后以避免被覆盖)
 COPY supervisord.conf /app/supervisord.conf
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
-
-# 复制项目文件
-COPY . .
 
 # 创建必要的目录
 RUN mkdir -p media static nltk_data /var/log
