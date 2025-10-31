@@ -49,12 +49,16 @@
 
 ### 测试执行与自动截屏
 ![测试执行与自动截屏](/img/image-6.png)
+![测试批量执行](image.png)
 
 ### 执行结果与报告
 ![执行结果](/img/image-7.png)
+![alt text](image-1.png)
+
 
 ### 报告详情
 ![报告详情](/img/image-8.png)
+![alt text](image-2.png)
 
 ### AI 驱动的需求评审与报告
 ![AI 需求评审](/img/image-9.png)

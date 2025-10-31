@@ -13,45 +13,18 @@ Docker 提供了环境一致性，是生产环境部署的首选方案。
 
 #### 1. 构建 Docker 镜像
 ```bash
-# 在项目根目录 (WHartTest_Django/) 下执行
-docker build -t wharttest-django .
+方案一：使用 Docker 部署 (推荐)
+# 1. 克隆仓库
+git clone https://github.com/MG-Duan/WHartTest.git
+cd WHartTest
+
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env 文件，设置必要的环境变量
+
+# 3. 启动服务（自动拉取预构建镜像）
+docker-compose up -d
 ```
-
-#### 2. 运行 Docker 容器
-
-您可以使用 `.env` 文件来管理环境变量，这是最推荐的方式。
-
-```bash
-# 确保 .env 文件在项目根目录中
-# 运行容器，并将 .env 文件传递给容器
-docker run -d \
-  --restart always \
-  -p 8000:8000 \
-  --env-file .env \
-  -v ./whart_data:/app/data \
-  wharttest-django
-```
-*   `-v ./whart_data:/app/data` 将容器内的数据目录挂载到宿主机，用于持久化存储，例如 SQLite 数据库、上传的文件等。
-
-#### 3. 使用 Docker Compose
-为了更方便地管理服务，您可以使用 `docker-compose.yml`。
-
-```yaml
-version: '3.8'
-services:
-  web:
-    build:
-      context: ./WHartTest_Django
-    container_name: wharttest_backend
-    restart: always
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    volumes:
-      - ./whart_data:/app/data
-```
-*   **注意**: 确保您的 `.env` 文件中包含了所有必要的环境变量。
 
 ### 🛠️ 方案二：手动部署 (以 Ubuntu 为例)
 

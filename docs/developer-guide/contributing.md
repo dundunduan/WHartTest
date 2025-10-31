@@ -160,6 +160,9 @@ docs(readme): 更新安装说明
 - 💬 加入我们的讨论
 - 📧 联系维护者
 
+<img src="./image.png" alt="contributing" width="400">
+
+
 ## 行为准则
 
 请在所有互动中保持尊重和专业。我们在这里一起构建伟大的东西！

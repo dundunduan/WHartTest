@@ -54,6 +54,8 @@ docker-compose up -d
 - 提交 Issue
 - 项目讨论区
 
+<img src="./docs/developer-guide/image.png" alt="contact" width="400">
+
 ---
 
 **WHartTest** - AI驱动测试用例生成，让测试更智能，让开发更高效！
