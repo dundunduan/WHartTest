@@ -706,7 +706,7 @@ const formatHistoryTime = (timestamp: string) => {
 
 // 切换工具消息或思考过程的展开/收起状态
 const toggleExpand = (message: ChatMessage) => {
-  // 找到messages数组中对应的消息索引
+  // 首先尝试在历史消息中查找并更新
   const index = messages.value.findIndex(m => 
     m.content === message.content && 
     m.time === message.time && 
@@ -725,6 +725,26 @@ const toggleExpand = (message: ChatMessage) => {
         ...messages.value[index],
         isExpanded: !messages.value[index].isExpanded
       };
+    }
+    return;
+  }
+
+  // 如果在历史消息中找不到，检查当前活动流中的消息
+  const stream = sessionId.value ? activeStreams.value[sessionId.value] : null;
+  if (stream?.messages && stream.messages.length > 0) {
+    const streamMsgIndex = stream.messages.findIndex(
+      m => m.content === message.content && 
+           m.time === message.time && 
+           m.type === message.messageType
+    );
+    
+    if (streamMsgIndex !== -1) {
+      // 直接修改 activeStreams 中的消息对象
+      if (message.isThinkingProcess) {
+        stream.messages[streamMsgIndex].isThinkingExpanded = !stream.messages[streamMsgIndex].isThinkingExpanded;
+      } else {
+        stream.messages[streamMsgIndex].isExpanded = !stream.messages[streamMsgIndex].isExpanded;
+      }
     }
   }
 };

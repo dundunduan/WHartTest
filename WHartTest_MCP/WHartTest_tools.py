@@ -379,6 +379,52 @@ def add_functional_case(
         print("HTTPError =", e)
         return e
 
+@mcp.tool(description='编辑WHartTest平台功能测试用例')
+def edit_functional_case(
+        project_id: int = Field(description='项目id'),
+        case_id: int = Field(description='用例id'),
+        name: str = Field(description='用例名称'),
+        precondition: str = Field(description='前置条件'),
+        level: str = Field(description='用例等级'),
+        module_id: int = Field(description='模块id'),
+        steps: list = Field(description='用例步骤,示例：,[{"step_number": 1,"description": "步骤描述1","expected_result": "预期结果1"},{"step_number": 2,"description": "步骤描述2","expected_result": "预期结果2"}]'),
+        notes: str = Field(description='备注')):
+    """
+    编辑WHartTest平台功能测试用例
+    """
+    try:
+        if not project_id:
+            return "项目id不能为空"
+        if not case_id:
+            return "用例id不能为空"
+        
+        url = base_url + f"/api/projects/{project_id}/testcases/{case_id}/"
+        data = {
+                "name": name,
+                "precondition": precondition,
+                "level": level,
+                "module_id": module_id,
+                "steps": steps,
+                "notes": notes
+                }
+
+        # 发起请求
+        response = requests.patch(url, headers=headers, json=data)
+        print("status =", response.status_code)
+        print("content-type =", response.headers.get("Content-Type"))
+        print("body-preview =", response.text[:200])
+        # 如有非 2xx 状态码直接抛异常
+        response.raise_for_status()
+        # 200，代表成功编辑
+        if response.json().get("code") == 200:
+            return f"用例：{name}编辑成功"
+        else:
+            return "编辑失败，请重试"
+    except requests.exceptions.HTTPError as e:
+        print("HTTPError =", e)
+        return e
+
+
 if __name__ == "__main__":
     # 使用 streamable-http 传输方式
     # host="0.0.0.0" 允许从其他容器访问

@@ -15,6 +15,8 @@ interface StreamMessage {
   type: 'human' | 'ai' | 'tool' | 'system';
   time: string;
   isExpanded?: boolean;
+  isThinkingProcess?: boolean;
+  isThinkingExpanded?: boolean;
 }
 
 interface StreamState {
