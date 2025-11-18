@@ -36,6 +36,7 @@
       />
 
       <ChatMessages
+        ref="chatMessagesRef"
         :messages="displayedMessages"
         :is-loading="isLoading && messages.length === 0"
         @toggle-expand="toggleExpand"
@@ -63,7 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onActivated, watch, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onActivated, watch, onUnmounted, computed, nextTick } from 'vue';
 import { Message, Modal } from '@arco-design/web-vue';
 import {
   sendChatMessage,
@@ -127,6 +128,7 @@ const messages = ref<ChatMessage[]>([]);
 const isLoading = ref(false);
 const sessionId = ref<string>('');
 const chatSessions = ref<ChatSession[]>([]);
+const chatMessagesRef = ref<InstanceType<typeof ChatMessages> | null>(null);
 const isStreamMode = ref(true); // 流式模式开关，默认开启
 
 // ⭐大脑模式开关 - 从localStorage加载
@@ -1825,6 +1827,10 @@ onActivated(async () => {
       clearStreamState(storedSessionId);
     }
   }
+
+  // 5. 页面激活后滚动到最新消息
+  await nextTick();
+  chatMessagesRef.value?.scrollToBottom();
 });
 
 onUnmounted(() => {
