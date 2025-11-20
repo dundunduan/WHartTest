@@ -383,14 +383,40 @@ class VectorStoreManager:
 
     @property
     def vector_store(self):
-        """获取向量存储实例（带缓存）"""
+        """获取向量存储实例（带缓存和健康检查）"""
         if self._vector_store is None:
             # 使用知识库ID作为缓存键
             cache_key = str(self.knowledge_base.id)
 
-            if cache_key not in self._vector_store_cache:
+            if cache_key in self._vector_store_cache:
+                # 验证缓存的实例是否仍然有效
+                cached_store = self._vector_store_cache[cache_key]
+                try:
+                    # 尝试访问 Collection,验证其存在性
+                    _ = cached_store._collection.count()
+                    logger.info(f"使用缓存的向量存储实例: {cache_key}")
+                    self._vector_store = cached_store
+                except Exception as e:
+                    logger.warning(f"缓存的 Collection 无效,重新创建: {e}")
+                    # 清理失效的缓存
+                    del self._vector_store_cache[cache_key]
+                    # 创建新实例
+                    logger.info(f"创建新的向量存储实例: {cache_key}")
+                    self._vector_store = self._create_vector_store()
+                    self._vector_store_cache[cache_key] = self._vector_store
+                    
+                    # 创建后立即检查和修复权限
+                    persist_directory = os.path.join(
+                        settings.MEDIA_ROOT,
+                        'knowledge_bases',
+                        str(self.knowledge_base.id),
+                        'chroma_db'
+                    )
+                    self._ensure_permissions(persist_directory)
+            else:
                 logger.info(f"创建新的向量存储实例: {cache_key}")
-                self._vector_store_cache[cache_key] = self._create_vector_store()
+                self._vector_store = self._create_vector_store()
+                self._vector_store_cache[cache_key] = self._vector_store
 
                 # 创建后立即检查和修复权限
                 persist_directory = os.path.join(
@@ -400,10 +426,6 @@ class VectorStoreManager:
                     'chroma_db'
                 )
                 self._ensure_permissions(persist_directory)
-            else:
-                logger.info(f"使用缓存的向量存储实例: {cache_key}")
-
-            self._vector_store = self._vector_store_cache[cache_key]
 
         return self._vector_store
 
@@ -620,17 +642,42 @@ class VectorStoreManager:
         DocumentChunk.objects.bulk_create(chunk_objects)
 
     def similarity_search(self, query: str, k: int = 5, score_threshold: float = 0.1) -> List[Dict[str, Any]]:
-        """相似度搜索"""
-        try:
-            # 记录搜索开始信息
-            embedding_type = type(self.embeddings).__name__
-            logger.info(f"🔍 开始相似度搜索:")
-            logger.info(f"   📝 查询: '{query}'")
-            logger.info(f"   🤖 使用嵌入模型: {embedding_type}")
-            logger.info(f"   🎯 返回数量: {k}, 相似度阈值: {score_threshold}")
+        """相似度搜索（带自动恢复机制）"""
+        # 记录搜索开始信息
+        embedding_type = type(self.embeddings).__name__
+        logger.info(f"🔍 开始相似度搜索:")
+        logger.info(f"   📝 查询: '{query}'")
+        logger.info(f"   🤖 使用嵌入模型: {embedding_type}")
+        logger.info(f"   🎯 返回数量: {k}, 相似度阈值: {score_threshold}")
 
-            # 执行相似度搜索
-            results = self.vector_store.similarity_search_with_score(query, k=k)
+        # 尝试执行搜索,带自动恢复
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                # 执行相似度搜索
+                results = self.vector_store.similarity_search_with_score(query, k=k)
+                break  # 成功则跳出循环
+            except Exception as e:
+                error_msg = str(e)
+                if ("does not exist" in error_msg or "Collection" in error_msg) and attempt < max_retries - 1:
+                    logger.error(f"Collection 不存在 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    # 清理缓存并重试
+                    cache_key = str(self.knowledge_base.id)
+                    self._vector_store_cache.pop(cache_key, None)
+                    self._vector_store = None
+                    logger.info("已清理缓存,正在重新创建 Collection...")
+                    continue
+                elif "does not exist" in error_msg or "Collection" in error_msg:
+                    # 最后一次尝试也失败,给出明确错误
+                    raise ValueError(
+                        f"知识库 '{self.knowledge_base.name}' 的向量索引已损坏。"
+                        f"请联系管理员重建知识库索引。知识库ID: {self.knowledge_base.id}"
+                    )
+                else:
+                    # 其他类型的错误直接抛出
+                    raise
+
+        try:
 
             logger.debug(f"原始搜索结果数量: {len(results)}")
             for i, (doc, score) in enumerate(results):

@@ -537,8 +537,16 @@ def create_knowledge_tool(knowledge_base_id: str, user, similarity_threshold: fl
 
             return result_text
 
+        except ValueError as e:
+            # 处理向量索引损坏的错误
+            logger.error(f"知识库工具调用失败: {e}")
+            return f"知识库搜索失败: {str(e)}"
         except Exception as e:
             logger.error(f"知识库工具调用失败: {e}")
+            # 如果是 Collection 不存在的错误,清理缓存
+            if "does not exist" in str(e) or "Collection" in str(e):
+                from .services import VectorStoreManager
+                VectorStoreManager.clear_cache(knowledge_base_id)
             return f"知识库搜索失败: {str(e)}"
 
     # 设置工具的名称和描述

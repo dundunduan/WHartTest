@@ -14,6 +14,9 @@ class KnowledgeConfig(AppConfig):
         import sys
         from django.db import connection
         from django.db.utils import OperationalError
+        
+        # 注册信号处理器
+        import knowledge.signals  # noqa
 
         # 只有在运行服务器时才执行预热，避免在迁移等命令中执行
         if 'runserver' in sys.argv:
