@@ -385,7 +385,7 @@ const handleEmbeddingServiceChange = (value: EmbeddingServiceType) => {
       break;
     case 'ollama':
       formData.api_base_url = 'http://localhost:11434';
-      formData.model_name = 'nomic-embed-text';
+      formData.model_name = 'bge-m3';
       formData.api_key = '';
       break;
     case 'custom':

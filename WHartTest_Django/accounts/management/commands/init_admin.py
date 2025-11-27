@@ -15,18 +15,20 @@ class Command(BaseCommand):
 
         # 检查管理员是否已存在
         admin_user = User.objects.filter(username=admin_username).first()
+        admin_created = False
         
         if admin_user:
             self.stdout.write(
                 self.style.WARNING(f'管理员账号 "{admin_username}" 已存在，跳过创建')
             )
         else:
-            # 创建管理员账号
+            # 创建管理员账号（注意：信号会自动初始化提示词）
             admin_user = User.objects.create_superuser(
                 username=admin_username,
                 email=admin_email,
                 password=admin_password
             )
+            admin_created = True
             
             self.stdout.write(
                 self.style.SUCCESS(
@@ -36,6 +38,9 @@ class Command(BaseCommand):
                     f'  密码: {admin_password}'
                 )
             )
+        
+        # 为管理员初始化提示词（无论是新建还是已存在）
+        self._initialize_admin_prompts(admin_user, admin_created)
         
         # 创建默认API Key（用于MCP服务）
         from api_keys.models import APIKey
@@ -182,3 +187,35 @@ class Command(BaseCommand):
                 '========================================\n'
             )
         )
+    
+    def _initialize_admin_prompts(self, admin_user, admin_created):
+        """为管理员初始化默认提示词"""
+        try:
+            from prompts.services import initialize_user_prompts
+            
+            if admin_created:
+                # 新创建的用户，信号已经自动初始化了提示词
+                self.stdout.write(
+                    self.style.SUCCESS('✅ 管理员提示词已通过信号自动初始化')
+                )
+            else:
+                # 已存在的用户，检查并补充缺失的提示词
+                result = initialize_user_prompts(admin_user, force_update=False)
+                
+                if result['summary']['created_count'] > 0:
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f'✅ 管理员提示词初始化完成:\n'
+                            f'  新建: {result["summary"]["created_count"]} 个\n'
+                            f'  跳过: {result["summary"]["skipped_count"]} 个'
+                        )
+                    )
+                else:
+                    self.stdout.write(
+                        self.style.WARNING('管理员提示词已存在，跳过初始化')
+                    )
+                    
+        except Exception as e:
+            self.stdout.write(
+                self.style.ERROR(f'❌ 初始化管理员提示词失败: {e}')
+            )

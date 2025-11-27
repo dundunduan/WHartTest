@@ -486,7 +486,7 @@ const memberColumns = [
     title: '加入时间',
     dataIndex: 'joined_at',
     slotName: 'joined_at',
-    width: 150,
+    width: 155,
   },
   {
     title: '操作',

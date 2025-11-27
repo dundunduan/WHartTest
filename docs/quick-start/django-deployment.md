@@ -64,14 +64,15 @@ source .venv/bin/activate
 uv pip sync -r requirements.txt
 ```
 
-#### 5. 数据库迁移和超级用户创建
+#### 5. 数据库迁移和系统初始化
 ```bash
 # 执行数据库迁移
 python manage.py migrate
 
-# 创建超级管理员
-python manage.py createsuperuser
+# 初始化系统（创建管理员、API Key、MCP配置、演示项目等）
+python manage.py init_admin
 ```
+> **说明**: `init_admin` 命令会自动创建默认管理员账号(admin/admin123456)、API Key、MCP配置和演示项目。该命令可重复执行，不会产生重复数据。
 
 #### 6. 启动服务
 ```bash
