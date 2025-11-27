@@ -2,10 +2,16 @@
   <div class="llm-config-management">
     <div class="page-header">
       <h1 class="text-2xl font-semibold mb-4">LLM 配置管理</h1>
-      <a-button type="primary" @click="handleAddNewConfig">
-        <template #icon><icon-plus /></template>
-        新增配置
-      </a-button>
+      <div class="header-actions">
+        <a-button @click="showPromptManagement">
+          <template #icon><icon-file /></template>
+          提示词管理
+        </a-button>
+        <a-button type="primary" @click="handleAddNewConfig">
+          <template #icon><icon-plus /></template>
+          新增配置
+        </a-button>
+      </div>
     </div>
 
     <LlmConfigTable
@@ -26,15 +32,25 @@
       @submit="handleSubmitConfig"
       @cancel="handleCloseModal"
     />
+
+    <!-- 提示词管理弹窗 -->
+    <SystemPromptModal
+      :visible="isPromptModalVisible"
+      :current-llm-config="currentLlmConfigForPrompt"
+      :loading="false"
+      @cancel="closePromptModal"
+      @prompts-updated="handlePromptsUpdated"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, reactive, watch } from 'vue';
 import { Button as AButton, Message, Modal as AModal } from '@arco-design/web-vue';
-import { IconPlus } from '@arco-design/web-vue/es/icon';
+import { IconPlus, IconFile } from '@arco-design/web-vue/es/icon';
 import LlmConfigTable from '@/features/langgraph/components/LlmConfigTable.vue';
 import LlmConfigFormModal from '@/features/langgraph/components/LlmConfigFormModal.vue';
+import SystemPromptModal from '@/features/langgraph/components/SystemPromptModal.vue';
 import type { LlmConfig, CreateLlmConfigRequest, PartialUpdateLlmConfigRequest } from '@/features/langgraph/types/llmConfig';
 import {
   listLlmConfigs,
@@ -56,6 +72,26 @@ const isLoading = ref(false);
 const isModalVisible = ref(false);
 const currentConfig = ref<LlmConfig | null>(null);
 const isFormLoading = ref(false);
+
+// 提示词管理弹窗相关
+const isPromptModalVisible = ref(false);
+const currentLlmConfigForPrompt = ref<LlmConfig | null>(null);
+
+const showPromptManagement = () => {
+  // 获取第一个激活的LLM配置作为默认配置
+  const activeConfig = llmConfigs.value.find(c => c.is_active);
+  currentLlmConfigForPrompt.value = activeConfig || null;
+  isPromptModalVisible.value = true;
+};
+
+const closePromptModal = () => {
+  isPromptModalVisible.value = false;
+};
+
+const handlePromptsUpdated = () => {
+  // 提示词更新后可以执行一些刷新操作
+  Message.success('提示词已更新');
+};
 
 const pagination = reactive<PaginationProps>({
   current: 1,
@@ -249,5 +285,10 @@ onMounted(() => {
   font-size: 1.5rem;
   font-weight: 600;
   margin-bottom: 0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
 }
 </style>

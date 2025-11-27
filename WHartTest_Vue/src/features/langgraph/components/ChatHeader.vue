@@ -54,6 +54,15 @@
           </template>
           管理提示词
         </a-button>
+        
+        <!-- LLM配置按钮 -->
+        <a-button v-if="!brainMode" type="text" @click="goToLlmConfigs">
+          <template #icon>
+            <icon-settings />
+          </template>
+          LLM配置
+        </a-button>
+        
         <a-tag v-if="sessionId" color="green">会话ID: {{ sessionIdShort }}</a-tag>
         <a-button v-if="hasMessages" type="text" status="danger" @click="$emit('clear-chat')">
           <template #icon>
@@ -85,11 +94,14 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { Button as AButton, Tag as ATag, Switch as ASwitch, Select as ASelect, Option as AOption } from '@arco-design/web-vue';
-import { IconDelete } from '@arco-design/web-vue/es/icon';
+import { IconDelete, IconSettings } from '@arco-design/web-vue/es/icon';
 import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue';
 import { getUserPrompts, getDefaultPrompt } from '@/features/prompts/services/promptService';
 import type { UserPrompt } from '@/features/prompts/types/prompt';
+
+const router = useRouter();
 
 interface Props {
   sessionId: string;
@@ -124,6 +136,11 @@ const sessionIdShort = computed(() => {
   if (!props.sessionId) return '';
   return props.sessionId.length > 8 ? `${props.sessionId.substring(0, 8)}...` : props.sessionId;
 });
+
+// 跳转到LLM配置页面
+const goToLlmConfigs = () => {
+  router.push('/llm-configs');
+};
 
 // 提示词相关数据
 const selectedPromptId = ref<number | null>(props.selectedPromptId);
