@@ -232,12 +232,18 @@ class UserPromptViewSet(BaseModelViewSet):
     @action(detail=False, methods=['get'])
     def init_status(self, request):
         """获取用户提示词初始化状态"""
-        # 获取用户现有的提示词类型
-        existing_types = set(UserPrompt.objects.filter(
-            user=request.user
-        ).values_list('prompt_type', flat=True))
-
-        # 所有可用的提示词类型
+        from prompts.services import get_default_prompts
+        
+        # 获取用户现有的提示词数量
+        existing_prompts = UserPrompt.objects.filter(user=request.user)
+        existing_count = existing_prompts.count()
+        existing_types = set(existing_prompts.values_list('prompt_type', flat=True))
+        
+        # 获取默认提示词模板列表
+        default_prompts = get_default_prompts()
+        total_default_prompts = len(default_prompts)
+        
+        # 所有可用的提示词类型（用于展示）
         all_types = dict(PromptType.choices)
         
         status_info = []
@@ -253,6 +259,9 @@ class UserPromptViewSet(BaseModelViewSet):
             info for info in status_info
             if not info['exists']
         ]
+        
+        # 计算缺失的提示词数量（默认模板数 - 已存在数）
+        missing_count = max(0, total_default_prompts - existing_count)
 
         return Response({
             "status": "success",
@@ -262,10 +271,10 @@ class UserPromptViewSet(BaseModelViewSet):
                 "all_types": status_info,
                 "missing_types": missing_types,
                 "summary": {
-                    "total_types": len(all_types),
-                    "existing_count": len(existing_types),
-                    "missing_count": len(missing_types),
-                    "can_initialize": len(missing_types) > 0
+                    "total_default_prompts": total_default_prompts,
+                    "existing_count": existing_count,
+                    "missing_count": missing_count,
+                    "can_initialize": missing_count > 0 or existing_count < total_default_prompts
                 }
             },
             "errors": {}

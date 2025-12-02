@@ -22,14 +22,24 @@ interface OrchestratorStreamState {
   nextAgent?: string; // 下一个Agent名称
   agentIdentityAdded?: boolean; // 标记是否已添加agent身份标识
   processedMessageCount?: number; // 已处理的消息数量（用于前端跟踪）
+  contextTokenCount?: number; // 当前上下文Token数
+  contextLimit?: number; // 上下文Token限制
+}
+
+// 上下文使用快照（独立缓存，不受clearOrchestratorStreamState影响）
+interface ContextUsageSnapshot {
+  tokenCount: number;
+  limit: number;
 }
 
 export const activeOrchestratorStreams = ref<Record<string, OrchestratorStreamState>>({});
+export const latestOrchestratorContextUsage = ref<Record<string, ContextUsageSnapshot>>({});
 
 export const clearOrchestratorStreamState = (sessionId: string) => {
   if (activeOrchestratorStreams.value[sessionId]) {
     delete activeOrchestratorStreams.value[sessionId];
   }
+  // 注意：不清除 latestOrchestratorContextUsage，保留最后的Token使用信息
 };
 
 // --- 全局流式状态管理结束 ---
@@ -207,11 +217,18 @@ export async function sendOrchestratorStreamMessage(
           if (parsed.type === 'start' && parsed.session_id) {
             streamSessionId = parsed.session_id;
             if (streamSessionId) {
-              // 初始化流状态
+              // 从缓存中获取上一次的token使用信息，避免闪烁
+              const cachedUsage = latestOrchestratorContextUsage.value[streamSessionId];
+              const prevTokenCount = cachedUsage?.tokenCount || 0;
+              const contextLimit = parsed.context_limit || cachedUsage?.limit || 128000;
+              
+              // 初始化流状态，保留之前的token信息
               activeOrchestratorStreams.value[streamSessionId] = {
                 content: '',
                 isComplete: false,
-                messages: []
+                messages: [],
+                contextTokenCount: prevTokenCount,
+                contextLimit: contextLimit
               };
               onStart(streamSessionId);
             }
@@ -370,6 +387,35 @@ export async function sendOrchestratorStreamMessage(
             activeOrchestratorStreams.value[streamSessionId].agentIdentityAdded = false; // 重置标志
             
             console.log('[Orchestrator] brain_decision: Agent switching from Brain to', parsed.next_agent);
+          }
+
+          // 处理 context_update 事件 - 上下文Token使用更新
+          if (parsed.type === 'context_update' && streamSessionId && activeOrchestratorStreams.value[streamSessionId]) {
+            const tokenCount = parsed.context_token_count ?? 0;
+            const limit = parsed.context_limit ?? activeOrchestratorStreams.value[streamSessionId].contextLimit ?? 128000;
+            
+            // 更新活跃流状态
+            activeOrchestratorStreams.value[streamSessionId].contextTokenCount = tokenCount;
+            activeOrchestratorStreams.value[streamSessionId].contextLimit = limit;
+            
+            // 同时更新独立缓存（不受clearOrchestratorStreamState影响）
+            latestOrchestratorContextUsage.value[streamSessionId] = { tokenCount, limit };
+            
+            console.log('[Orchestrator] Context update:', tokenCount, '/', limit);
+          }
+
+          // 处理警告事件（如上下文即将满）
+          if (parsed.type === 'warning' && streamSessionId && activeOrchestratorStreams.value[streamSessionId]) {
+            const warningMessage = parsed.message || '警告';
+            console.warn('[Orchestrator] Warning:', warningMessage);
+            // 将警告添加到消息列表中显示给用户
+            const now = new Date();
+            const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+            activeOrchestratorStreams.value[streamSessionId].messages.push({
+              content: `⚠️ ${warningMessage}`,
+              type: 'system',
+              time: time
+            });
           }
 
           // 处理AI消息(message事件) - 与ChatStreamAPIView保持一致的格式

@@ -23,6 +23,9 @@ from wharttest_django.permissions import HasModelPermission
 # 导入提示词管理
 from prompts.models import UserPrompt
 
+# 导入上下文压缩模块
+from orchestrator_integration.context_compression import ConversationCompressor, CompressionSettings
+
 # --- New Imports ---
 from typing import TypedDict, Annotated, List
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
@@ -37,6 +40,7 @@ from langgraph.prebuilt import create_react_agent # For agent with tools
 # from langgraph.checkpoint.memory import InMemorySaver # Remove InMemorySaver import if no longer globally needed
 import os
 import uuid # Import uuid module
+import copy  # For deep copying checkpoint data
 # Knowledge base integration
 from knowledge.langgraph_integration import KnowledgeRAGService, ConversationalRAGService, LangGraphKnowledgeIntegration
 from knowledge.models import KnowledgeBase
@@ -1017,6 +1021,22 @@ class ChatHistoryAPIView(APIView):
                     logger.info(f"ChatHistoryAPIView: No checkpoints found for thread_id: {thread_id}")
             # By processing only the latest checkpoint, we get the final state of messages, avoiding duplicates.
 
+            # 计算上下文Token使用信息
+            context_token_count = 0
+            context_limit = 128000
+            try:
+                from requirements.context_limits import context_checker
+                active_config = LLMConfig.objects.get(is_active=True)
+                context_limit = active_config.context_limit or 128000
+                
+                for msg_data in history_messages:
+                    content = msg_data.get('content', '')
+                    if content:
+                        content_str = content if isinstance(content, str) else str(content)
+                        context_token_count += context_checker.count_tokens(content_str, active_config.name or "gpt-4o")
+            except Exception as e:
+                logger.warning(f"ChatHistoryAPIView: Failed to calculate token count: {e}")
+
             return Response({
                 "status": "success", "code": status.HTTP_200_OK,
                 "message": "Chat history retrieved successfully.",
@@ -1027,7 +1047,9 @@ class ChatHistoryAPIView(APIView):
                     "project_name": project.name,
                     "prompt_id": prompt_id,
                     "prompt_name": prompt_name,
-                    "history": history_messages
+                    "history": history_messages,
+                    "context_token_count": context_token_count,
+                    "context_limit": context_limit
                 }
             }, status=status.HTTP_200_OK)
 
@@ -1587,6 +1609,14 @@ class ChatStreamAPIView(View):
                 thread_id = "_".join(thread_id_parts)
                 logger.info(f"ChatStreamAPIView: Using thread_id: {thread_id} for project: {project.name}")
 
+                # 预加载 checkpoint 数据（供系统提示词检查和上下文压缩共用）
+                checkpoint_tuples_list = []
+                try:
+                    async for checkpoint_tuple in actual_memory_checkpointer.alist(config={"configurable": {"thread_id": thread_id}}):
+                        checkpoint_tuples_list.append(checkpoint_tuple)
+                except Exception as e:
+                    logger.warning(f"ChatStreamAPIView: Failed to load checkpoint history: {e}")
+                
                 # 构建消息列表，检查是否需要添加系统提示词
                 messages_list = []
 
@@ -1598,11 +1628,7 @@ class ChatStreamAPIView(View):
                 should_add_system_prompt = False
                 if effective_prompt:
                     try:
-                        # 尝试获取当前会话的历史消息 - 使用异步接口
-                        checkpoint_tuples_list = []
-                        async for checkpoint_tuple in actual_memory_checkpointer.alist(config={"configurable": {"thread_id": thread_id}}):
-                            checkpoint_tuples_list.append(checkpoint_tuple)
-
+                        # 使用预加载的 checkpoint 数据检查
                         if checkpoint_tuples_list:
                             # 检查最新checkpoint中是否已有系统提示词
                             latest_checkpoint = checkpoint_tuples_list[0].checkpoint
@@ -1670,6 +1696,115 @@ class ChatStreamAPIView(View):
                         return
                     logger.info(f"ChatStreamAPIView: Message {i}: {type(msg).__name__} with content length {len(str(msg.content))}")
 
+                # 上下文检查与压缩
+                context_limit = active_config.context_limit or 128000
+                try:
+                    from requirements.context_limits import context_checker
+                    
+                    # 初始化压缩器
+                    compression_settings = CompressionSettings(
+                        max_context_tokens=context_limit,
+                        trigger_ratio=0.75
+                    )
+                    conversation_compressor = ConversationCompressor(
+                        llm=llm,
+                        model_name=active_config.name or getattr(llm, "model_name", "gpt-4o"),
+                        settings=compression_settings
+                    )
+                    
+                    # 从预加载的 checkpoint 获取历史消息和压缩状态
+                    latest_checkpoint_tuple = checkpoint_tuples_list[0] if checkpoint_tuples_list else None
+                    history_messages = []
+                    existing_metadata = {}
+                    summary_text = None
+                    summarized_count = 0
+                    
+                    if latest_checkpoint_tuple:
+                        latest_checkpoint = latest_checkpoint_tuple.checkpoint or {}
+                        history_messages = latest_checkpoint.get('channel_values', {}).get('messages', []) or []
+                        existing_metadata = latest_checkpoint_tuple.metadata or {}
+                        compression_state = dict(existing_metadata.get("context_compression") or {})
+                        summary_text = compression_state.get("context_summary")
+                        summarized_count = compression_state.get("summarized_message_count", 0)
+                    
+                    # 执行压缩检查
+                    compression_result = await conversation_compressor.prepare(
+                        messages=history_messages,
+                        summary_text=summary_text,
+                        summarized_count=summarized_count,
+                    )
+                    history_token_count = compression_result.token_count
+                    
+                    # 如果压缩被触发，更新 checkpoint
+                    if latest_checkpoint_tuple and (
+                        compression_result.triggered
+                        or "context_summary" in compression_result.state_updates
+                        or "summarized_message_count" in compression_result.state_updates
+                    ):
+                        updated_checkpoint = copy.deepcopy(latest_checkpoint_tuple.checkpoint)
+                        updated_channel_values = updated_checkpoint.setdefault("channel_values", {})
+                        if compression_result.triggered:
+                            updated_channel_values["messages"] = compression_result.messages
+                            logger.info(f"ChatStreamAPIView: Context compression triggered, messages reduced from {len(history_messages)} to {len(compression_result.messages)}")
+                        
+                        updated_metadata = copy.deepcopy(existing_metadata)
+                        compression_meta = dict(updated_metadata.get("context_compression") or {})
+                        if "context_summary" in compression_result.state_updates:
+                            compression_meta["context_summary"] = compression_result.state_updates["context_summary"]
+                        if "summarized_message_count" in compression_result.state_updates:
+                            compression_meta["summarized_message_count"] = compression_result.state_updates["summarized_message_count"]
+                        compression_meta["context_token_count"] = compression_result.state_updates.get("context_token_count", history_token_count)
+                        updated_metadata["context_compression"] = compression_meta
+                        
+                        # 写入更新后的 checkpoint
+                        checkpoint_config = latest_checkpoint_tuple.config.get("configurable", {})
+                        update_config = {
+                            "configurable": {
+                                "thread_id": checkpoint_config.get("thread_id"),
+                                "checkpoint_ns": checkpoint_config.get("checkpoint_ns", ""),
+                            }
+                        }
+                        parent_config = latest_checkpoint_tuple.parent_config
+                        if parent_config:
+                            parent_checkpoint_id = parent_config.get("configurable", {}).get("checkpoint_id")
+                            if parent_checkpoint_id:
+                                update_config["configurable"]["checkpoint_id"] = parent_checkpoint_id
+                        
+                        await actual_memory_checkpointer.aput(
+                            update_config,
+                            updated_checkpoint,
+                            updated_metadata,
+                            updated_checkpoint.get("channel_versions", {}),
+                        )
+                        logger.info(f"ChatStreamAPIView: Applied context compression for thread {thread_id}")
+                    
+                    # 计算总 token 数（历史 + 当前消息）
+                    total_tokens = history_token_count
+                    for msg in messages_list:
+                        if hasattr(msg, 'content') and msg.content:
+                            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                            total_tokens += context_checker.count_tokens(content, active_config.name or "gpt-4o")
+                    
+                    usage_ratio = total_tokens / context_limit
+                    logger.info(f"ChatStreamAPIView: Context usage: {total_tokens}/{context_limit} ({usage_ratio*100:.1f}%)")
+                    
+                    # 压缩后仍超过95%时拒绝新消息
+                    if usage_ratio > 0.95:
+                        logger.warning(f"ChatStreamAPIView: Context limit exceeded after compression ({usage_ratio*100:.1f}%)")
+                        yield create_sse_data({
+                            'type': 'error', 
+                            'message': f'对话上下文已达上限（{total_tokens}/{context_limit} tokens），压缩后仍无法继续，请新建对话。'
+                        })
+                        return
+                    # 压缩后仍超过85%时发送警告
+                    elif usage_ratio > 0.85:
+                        yield create_sse_data({
+                            'type': 'warning', 
+                            'message': f'对话上下文即将达到上限（{int(usage_ratio*100)}%），建议尽快新建对话。'
+                        })
+                except Exception as e:
+                    logger.warning(f"ChatStreamAPIView: Context check/compression failed: {e}", exc_info=True)
+
                 input_messages = {"messages": messages_list}
                 invoke_config = {
                     "configurable": {"thread_id": thread_id},
@@ -1683,7 +1818,13 @@ class ChatStreamAPIView(View):
                     logger.info(f"ChatStreamAPIView: Message {i}: type={type(msg).__name__}, content={repr(msg.content)}")
 
                 # 发送开始信号
-                yield create_sse_data({'type': 'start', 'thread_id': thread_id, 'session_id': session_id, 'project_id': project_id})
+                yield create_sse_data({
+                    'type': 'start', 
+                    'thread_id': thread_id, 
+                    'session_id': session_id, 
+                    'project_id': project_id,
+                    'context_limit': context_limit
+                })
 
                 # 使用astream进行流式处理，支持多种模式
                 stream_modes = ["updates", "messages"]
@@ -1718,6 +1859,31 @@ class ChatStreamAPIView(View):
                 except Exception as e:
                     logger.error(f"ChatStreamAPIView: Error during streaming: {e}", exc_info=True)
                     yield create_sse_data({'type': 'error', 'message': f'Streaming error: {str(e)}'})
+
+                # 计算并发送上下文Token使用信息
+                try:
+                    from requirements.context_limits import context_checker
+                    context_limit = active_config.context_limit or 128000
+                    
+                    # 获取当前会话的所有消息来计算token
+                    current_state = await runnable_to_invoke.aget_state(invoke_config)
+                    all_messages = current_state.values.get("messages", []) if current_state.values else []
+                    
+                    # 计算所有消息的token总数
+                    total_tokens = 0
+                    for msg in all_messages:
+                        if hasattr(msg, 'content') and msg.content:
+                            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                            total_tokens += context_checker.count_tokens(content, active_config.name or "gpt-4o")
+                    
+                    logger.info(f"[Context Update] Chat mode: {total_tokens}/{context_limit} tokens")
+                    yield create_sse_data({
+                        'type': 'context_update',
+                        'context_token_count': total_tokens,
+                        'context_limit': context_limit
+                    })
+                except Exception as e:
+                    logger.warning(f"ChatStreamAPIView: Failed to calculate token count: {e}")
 
                 # 发送完成信号
                 yield create_sse_data({'type': 'complete'})

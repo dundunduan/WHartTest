@@ -24,14 +24,24 @@ interface StreamState {
   error?: string;
   isComplete: boolean;
   messages: StreamMessage[]; // 存储所有消息,包括工具消息
+  contextTokenCount?: number; // 当前上下文Token数
+  contextLimit?: number; // 上下文Token限制
+}
+
+// 上下文使用快照（独立缓存，不受clearStreamState影响）
+interface ContextUsageSnapshot {
+  tokenCount: number;
+  limit: number;
 }
 
 export const activeStreams = ref<Record<string, StreamState>>({});
+export const latestContextUsage = ref<Record<string, ContextUsageSnapshot>>({});
 
 export const clearStreamState = (sessionId: string) => {
   if (activeStreams.value[sessionId]) {
     delete activeStreams.value[sessionId];
   }
+  // 注意：不清除 latestContextUsage，保留最后的Token使用信息
 };
 // --- 全局流式状态管理结束 ---
 
@@ -195,7 +205,41 @@ export async function sendChatMessageStream(
     let buffer = '';
     while (true) {
       const { done, value } = await reader.read();
+      
       if (done) {
+        // 流结束时，处理buffer中剩余的数据
+        if (buffer.trim()) {
+          const remainingLines = buffer.split('\n');
+          for (const line of remainingLines) {
+            if (line.trim() === '' || !line.startsWith('data: ')) continue;
+            
+            const jsonData = line.slice(6);
+            if (jsonData === '[DONE]') continue;
+            
+            try {
+              const parsed = JSON.parse(jsonData);
+              
+              // 处理上下文Token更新事件
+              if (parsed.type === 'context_update' && streamSessionId) {
+                const tokenCount = parsed.context_token_count ?? 0;
+                const limit = parsed.context_limit ?? 128000;
+                latestContextUsage.value[streamSessionId] = { tokenCount, limit };
+                
+                if (activeStreams.value[streamSessionId]) {
+                  activeStreams.value[streamSessionId].contextTokenCount = tokenCount;
+                  activeStreams.value[streamSessionId].contextLimit = limit;
+                }
+              }
+              
+              if (parsed.type === 'complete' && streamSessionId && activeStreams.value[streamSessionId]) {
+                activeStreams.value[streamSessionId].isComplete = true;
+              }
+            } catch (e) {
+              console.warn('Failed to parse remaining SSE data:', line);
+            }
+          }
+        }
+        
         // 流结束时，如果会话仍在进行中，则标记为完成
         if (streamSessionId && activeStreams.value[streamSessionId] && !activeStreams.value[streamSessionId].isComplete) {
             activeStreams.value[streamSessionId].isComplete = true;
@@ -229,14 +273,50 @@ export async function sendChatMessageStream(
           if (parsed.type === 'start' && parsed.session_id) {
             streamSessionId = parsed.session_id;
             if (streamSessionId) {
-              // 初始化或重置此会话的流状态
+              // 从缓存中获取上一次的token使用信息，避免闪烁
+              const cachedUsage = latestContextUsage.value[streamSessionId];
+              const prevTokenCount = cachedUsage?.tokenCount || 0;
+              const contextLimit = parsed.context_limit || cachedUsage?.limit || 128000;
+              
+              // 初始化或重置此会话的流状态，保留之前的token信息
               activeStreams.value[streamSessionId] = {
                 content: '',
                 isComplete: false,
-                messages: []
+                messages: [],
+                contextTokenCount: prevTokenCount,
+                contextLimit: contextLimit
               };
               onStart(streamSessionId);
             }
+          }
+
+          // 处理上下文Token更新事件
+          if (parsed.type === 'context_update' && streamSessionId) {
+            const tokenCount = parsed.context_token_count ?? 0;
+            const limit = parsed.context_limit ?? 128000;
+            
+            // 总是更新独立缓存（优先保证缓存被更新）
+            latestContextUsage.value[streamSessionId] = { tokenCount, limit };
+            
+            // 如果活跃流还存在，也更新它
+            if (activeStreams.value[streamSessionId]) {
+              activeStreams.value[streamSessionId].contextTokenCount = tokenCount;
+              activeStreams.value[streamSessionId].contextLimit = limit;
+            }
+          }
+
+          // 处理警告事件（如上下文即将满）
+          if (parsed.type === 'warning' && streamSessionId && activeStreams.value[streamSessionId]) {
+            const warningMessage = parsed.message || '警告';
+            console.warn('[Chat] Warning:', warningMessage);
+            // 将警告添加到消息列表中显示给用户
+            const now = new Date();
+            const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+            activeStreams.value[streamSessionId].messages.push({
+              content: `⚠️ ${warningMessage}`,
+              type: 'system',
+              time: time
+            });
           }
 
           // 处理工具消息(update事件)

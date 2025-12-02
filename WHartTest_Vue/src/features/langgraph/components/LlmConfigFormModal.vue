@@ -108,16 +108,27 @@
           </a-form-item>
         </a-col>
 
-        <!-- 第五行：开关区域 (并排) -->
-        <a-col :span="12">
+        <!-- 第五行：开关区域 + 上下文限制 -->
+        <a-col :span="8">
+          <a-form-item field="context_limit" label="上下文限制">
+            <a-input-number
+              v-model="formData.context_limit"
+              :min="1000"
+              :max="2000000"
+              :step="1000"
+              placeholder="128000"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
           <a-form-item field="supports_vision" label="能力支持">
             <a-space>
               <a-switch v-model="formData.supports_vision" />
-              <span class="switch-desc">支持图片输入 (Vision)</span>
+              <span class="switch-desc">Vision</span>
             </a-space>
           </a-form-item>
         </a-col>
-        <a-col :span="12">
+        <a-col :span="8">
           <a-form-item field="is_active" label="配置状态">
             <a-space>
               <a-switch v-model="formData.is_active" checked-color="#00b42a" />
@@ -138,6 +149,7 @@ import {
   FormItem as AFormItem,
   Input as AInput,
   InputPassword as AInputPassword,
+  InputNumber as AInputNumber,
   Textarea as ATextarea,
   Switch as ASwitch,
   Select as ASelect,
@@ -188,6 +200,7 @@ const defaultFormData: CreateLlmConfigRequest = {
   api_key: '',
   system_prompt: '',
   supports_vision: false,
+  context_limit: 128000,
   is_active: false,
 };
 const formData = ref<CreateLlmConfigRequest>({ ...defaultFormData });
@@ -236,8 +249,9 @@ watch(
           name: props.configData.name,
           api_url: props.configData.api_url,
           api_key: '', // 编辑时不显示旧 Key，留空表示不修改
-          system_prompt: props.configData.system_prompt || '', // 填充系统提示词
-          supports_vision: props.configData.supports_vision || false, // 填充多模态支持
+          system_prompt: props.configData.system_prompt || '',
+          supports_vision: props.configData.supports_vision || false,
+          context_limit: props.configData.context_limit || 128000,
           is_active: props.configData.is_active,
         };
       } else {
@@ -280,6 +294,9 @@ const handleSubmit = async () => {
     }
     if (formData.value.supports_vision !== undefined) { // 包含多模态支持
       partialData.supports_vision = formData.value.supports_vision;
+    }
+    if (formData.value.context_limit !== undefined) { // 包含上下文限制
+      partialData.context_limit = formData.value.context_limit;
     }
     submitData = partialData;
     emit('submit', submitData, props.configData.id);

@@ -23,6 +23,7 @@ from prompts.models import UserPrompt, PromptType
 from .models import OrchestratorTask
 from .serializers import OrchestratorTaskSerializer
 from .graph import create_orchestrator_graph, OrchestratorState
+from .context_compression import CompressionSettings
 from langgraph_integration.views import create_llm_instance, create_sse_data
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,14 @@ class OrchestratorStreamAPIView(View):
             # 2. 创建LLM实例
             llm = create_llm_instance(active_config, temperature=0.7)
             logger.info(f"OrchestratorStream: LLM initialized")
+            
+            # 2.1 创建上下文压缩配置
+            compression_settings = CompressionSettings(
+                max_context_tokens=active_config.context_limit,
+                trigger_ratio=getattr(settings, "ORCHESTRATOR_CONTEXT_TRIGGER_RATIO", 0.6),
+                preserve_recent_messages=getattr(settings, "ORCHESTRATOR_PRESERVE_RECENT_MESSAGES", 8),
+            )
+            logger.info(f"OrchestratorStream: Context compression configured (limit={active_config.context_limit})")
             
             # 2.5 加载MCP工具（与ChatStreamAPIView一致）
             mcp_tools_list = []
@@ -182,7 +191,9 @@ class OrchestratorStreamAPIView(View):
                     checkpointer,
                     user=request.user,
                     mcp_tools=mcp_tools_list,
-                    project_id=project_id  # 传递project_id用于创建知识库工具
+                    project_id=project_id,
+                    compression_settings=compression_settings,
+                    model_name=active_config.name
                 )
                 logger.info(f"OrchestratorStream: StateGraph created with {len(mcp_tools_list)} MCP tools, project_id={project_id}, user={request.user.username}")
                 if len(mcp_tools_list) == 0:
@@ -212,7 +223,10 @@ class OrchestratorStreamAPIView(View):
                     "instruction": "",
                     "reason": "",
                     "current_step": 0,
-                    "max_steps": 10
+                    "max_steps": 10,
+                    "context_summary": None,
+                    "summarized_message_count": 0,
+                    "context_token_count": 0
                 }
                 
                 # 7. 发送开始信号
@@ -221,7 +235,8 @@ class OrchestratorStreamAPIView(View):
                     'session_id': session_id,
                     'project_id': project_id,
                     'project_name': project.name,
-                    'requirement': user_message_content
+                    'requirement': user_message_content,
+                    'context_limit': compression_settings.max_context_tokens if compression_settings else 128000
                 })
                 
                 # 8. 流式执行StateGraph
@@ -397,11 +412,23 @@ class OrchestratorStreamAPIView(View):
                                 reason = node_output.get("reason", "")
                                 current_step = node_output.get("current_step", 0)
                                 
+                                # 获取Token使用信息
+                                context_token_count = node_output.get("context_token_count", 0)
+                                context_limit = compression_settings.max_context_tokens if compression_settings else 128000
+                                logger.info(f"[Context Update] Sending token info: {context_token_count}/{context_limit}")
+                                
                                 # 获取状态信息以匹配历史格式
                                 executed_agents = node_output.get("executed_agents", [])
                                 has_requirement_analysis = bool(node_output.get("requirement_analysis"))
                                 has_testcases = bool(node_output.get("testcases"))
                                 max_steps = node_output.get("max_steps", 10)
+                                
+                                # 发送上下文Token更新事件
+                                yield create_sse_data({
+                                    'type': 'context_update',
+                                    'context_token_count': context_token_count,
+                                    'context_limit': context_limit
+                                })
                                 
                                 # 🔧 关键：Brain可能返回多条消息（decision + final_response）
                                 messages_from_brain = node_output.get("messages", [])

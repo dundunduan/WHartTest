@@ -112,6 +112,107 @@ def safe_llm_invoke(llm, messages, max_retries=3, retry_delay=2):
     raise last_error or Exception("LLM 调用失败，所有重试都未成功")
 
 
+def extract_json_from_response(content: str) -> Optional[dict]:
+    """
+    从 LLM 响应中提取 JSON 对象，支持多种格式。
+    
+    支持的格式：
+    1. ```json {...} ``` - Markdown 代码块
+    2. {...} - 裸 JSON 对象
+    3. 前后有文本的 JSON 对象
+    
+    Args:
+        content: LLM 响应的原始内容
+        
+    Returns:
+        解析后的 dict，或 None（如果无法解析）
+    """
+    if not content:
+        return None
+    
+    content = content.strip()
+    
+    # 策略1: 尝试 ```json ... ``` 代码块格式
+    json_block_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
+    if json_block_match:
+        try:
+            return json.loads(json_block_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    
+    # 策略2: 直接解析整个内容（裸 JSON）
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    
+    # 策略3: 查找第一个 { 到最后一个 } 之间的内容
+    first_brace = content.find('{')
+    last_brace = content.rfind('}')
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        try:
+            return json.loads(content[first_brace:last_brace + 1])
+        except json.JSONDecodeError:
+            pass
+    
+    # 策略4: 尝试匹配平衡的 JSON 对象
+    if first_brace != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i, char in enumerate(content[first_brace:], first_brace):
+            if escape_next:
+                escape_next = False
+                continue
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if not in_string:
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(content[first_brace:i + 1])
+                        except json.JSONDecodeError:
+                            break
+    
+    logger.warning(f"无法从响应中提取 JSON，响应前200字符: {content[:200]}")
+    return None
+
+
+def format_prompt_template(template: str, **kwargs) -> str:
+    """
+    格式化提示词模板，同时支持 {var} 和 $var 两种占位符格式。
+    
+    优先使用 {var} 格式替换，然后使用 $var 格式替换。
+    
+    Args:
+        template: 提示词模板字符串
+        **kwargs: 占位符变量及其值
+        
+    Returns:
+        替换后的字符串
+    """
+    result = template
+    
+    # 先替换 {var} 格式（使用简单字符串替换，避免与 JSON 中的 {{ }} 冲突）
+    for key, value in kwargs.items():
+        result = result.replace(f'{{{key}}}', str(value))
+    
+    # 再替换 $var 格式（使用 Template）
+    try:
+        result = Template(result).safe_substitute(**kwargs)
+    except Exception:
+        pass
+    
+    return result
+
+
 class DocumentProcessor:
     """文档处理器 - 负责文档内容提取和预处理"""
     
@@ -577,8 +678,7 @@ class ModuleSplitter:
             # 如果内容太长，进行智能截断，但保持结构完整
             processed_content = self._prepare_content_for_analysis(content)
 
-            prompt_template = Template(structure_prompt)
-            formatted_prompt = prompt_template.safe_substitute(content=processed_content)
+            formatted_prompt = format_prompt_template(structure_prompt, content=processed_content)
             messages = [
                 SystemMessage(content="你是一个专业的需求分析师，擅长分析需求文档结构。"),
                 HumanMessage(content=formatted_prompt)
@@ -586,22 +686,16 @@ class ModuleSplitter:
             
             response = safe_llm_invoke(self.llm, messages)
             
-            # 提取JSON内容
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # 如果没有找到代码块，尝试直接解析整个响应
-                json_str = response.content.strip()
+            modules_structure = extract_json_from_response(response.content)
+            if not modules_structure:
+                logger.warning("模块结构分析未返回有效JSON")
+                return self._get_default_modules_structure(content)
             
-            modules_structure = json.loads(json_str)
             logger.info(f"识别到 {len(modules_structure)} 个模块")
-            
             return modules_structure
 
         except json.JSONDecodeError as e:
             logger.error(f"解析模块结构JSON失败: {e}")
-            # 返回默认的模块结构
             return self._get_default_modules_structure(content)
         except Exception as e:
             logger.error(f"分析文档结构失败: {e}")
@@ -1624,13 +1718,11 @@ class RequirementReviewEngine:
     def analyze_document_directly(self, content: str, analysis_options: dict = None) -> dict:
         """直接分析整个文档（不拆分模块）"""
         try:
-            # 从数据库获取用户的提示词
             direct_prompt = self._get_user_prompt('direct_analysis')
             if not direct_prompt:
                 raise ValueError("用户未配置直接分析提示词，请先在提示词管理中配置")
 
-            prompt_template = Template(direct_prompt)
-            formatted_prompt = prompt_template.safe_substitute(content=content[:8000])
+            formatted_prompt = format_prompt_template(direct_prompt, content=content[:8000])
             messages = [
                 SystemMessage(content="你是一位专业的需求分析师，擅长需求文档评审。"),
                 HumanMessage(content=formatted_prompt)
@@ -1638,12 +1730,8 @@ class RequirementReviewEngine:
 
             response = safe_llm_invoke(self.llm, messages)
 
-            # 提取JSON内容
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                analysis_result = json.loads(json_str)
-
+            analysis_result = extract_json_from_response(response.content)
+            if analysis_result:
                 # 确保必要字段存在
                 analysis_result.setdefault('overall_rating', 'average')
                 analysis_result.setdefault('completion_score', 70)
@@ -1653,10 +1741,9 @@ class RequirementReviewEngine:
                 analysis_result.setdefault('summary', '文档评审完成')
                 analysis_result.setdefault('recommendations', '请根据问题列表进行改进')
                 analysis_result.setdefault('issues', [])
-
                 return analysis_result
             else:
-                # 如果没有找到JSON，返回默认结果
+                logger.warning("直接分析未返回JSON格式，使用默认结果")
                 return self._get_default_direct_analysis()
 
         except json.JSONDecodeError as e:
@@ -1697,8 +1784,7 @@ class RequirementReviewEngine:
             return self._get_default_analysis_result('completeness_analysis')
         
         try:
-            prompt_template = Template(completeness_prompt)
-            formatted_prompt = prompt_template.safe_substitute(document=content)
+            formatted_prompt = format_prompt_template(completeness_prompt, document=content)
             logger.debug(f"完整性分析提示词已格式化，文档长度: {len(content)}")
             
             messages = [
@@ -1710,10 +1796,8 @@ class RequirementReviewEngine:
             response = safe_llm_invoke(self.llm, messages)
             logger.info(f"LLM响应完成，内容长度: {len(response.content)}")
             
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            
-            if json_match:
-                result = json.loads(json_match.group(1))
+            result = extract_json_from_response(response.content)
+            if result:
                 logger.info(f"完整性分析完成，评分: {result.get('overall_score', 'N/A')}, 问题数: {len(result.get('issues', []))}")
                 return result
             else:
@@ -1736,8 +1820,7 @@ class RequirementReviewEngine:
             return self._get_default_analysis_result('consistency_analysis')
         
         try:
-            prompt_template = Template(consistency_prompt)
-            formatted_prompt = prompt_template.safe_substitute(document=content)
+            formatted_prompt = format_prompt_template(consistency_prompt, document=content)
             logger.debug(f"一致性分析提示词已格式化，文档长度: {len(content)}")
             
             messages = [
@@ -1749,10 +1832,8 @@ class RequirementReviewEngine:
             response = safe_llm_invoke(self.llm, messages)
             logger.info(f"LLM响应完成，内容长度: {len(response.content)}")
             
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            
-            if json_match:
-                result = json.loads(json_match.group(1))
+            result = extract_json_from_response(response.content)
+            if result:
                 logger.info(f"一致性分析完成，评分: {result.get('overall_score', 'N/A')}, 问题数: {len(result.get('issues', []))}")
                 return result
             else:
@@ -1775,8 +1856,7 @@ class RequirementReviewEngine:
             return self._get_default_analysis_result('testability_analysis')
         
         try:
-            prompt_template = Template(testability_prompt)
-            formatted_prompt = prompt_template.safe_substitute(document=content)
+            formatted_prompt = format_prompt_template(testability_prompt, document=content)
             logger.debug(f"可测性分析提示词已格式化，文档长度: {len(content)}")
             messages = [
                 SystemMessage(content="你是一位资深的测试专家。"),
@@ -1784,10 +1864,10 @@ class RequirementReviewEngine:
             ]
             
             response = safe_llm_invoke(self.llm, messages)
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            
-            if json_match:
-                return json.loads(json_match.group(1))
+            result = extract_json_from_response(response.content)
+            if result:
+                logger.info(f"可测性分析完成，评分: {result.get('overall_score', 'N/A')}")
+                return result
             else:
                 logger.warning("可测性分析未返回JSON格式，使用默认结果")
                 return self._get_default_analysis_result('testability_analysis')
@@ -1800,24 +1880,24 @@ class RequirementReviewEngine:
     
     def analyze_feasibility(self, content: str) -> dict:
         """可行性专项分析 - 分析完整文档的可行性"""
+        logger.info("开始执行可行性分析...")
         feasibility_prompt = self._get_user_prompt('feasibility_analysis')
         if not feasibility_prompt:
             logger.warning("用户未配置可行性分析提示词，返回默认结果")
             return self._get_default_analysis_result('feasibility_analysis')
         
         try:
-            prompt_template = Template(feasibility_prompt)
-            formatted_prompt = prompt_template.safe_substitute(document=content)
+            formatted_prompt = format_prompt_template(feasibility_prompt, document=content)
             messages = [
                 SystemMessage(content="你是一位资深的技术架构师。"),
                 HumanMessage(content=formatted_prompt)
             ]
             
             response = safe_llm_invoke(self.llm, messages)
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            
-            if json_match:
-                return json.loads(json_match.group(1))
+            result = extract_json_from_response(response.content)
+            if result:
+                logger.info(f"可行性分析完成，评分: {result.get('overall_score', 'N/A')}")
+                return result
             else:
                 logger.warning("可行性分析未返回JSON格式，使用默认结果")
                 return self._get_default_analysis_result('feasibility_analysis')
@@ -1830,24 +1910,24 @@ class RequirementReviewEngine:
     
     def analyze_clarity(self, content: str) -> dict:
         """清晰度专项分析 - 分析完整文档的清晰度"""
+        logger.info("开始执行清晰度分析...")
         clarity_prompt = self._get_user_prompt('clarity_analysis')
         if not clarity_prompt:
             logger.warning("用户未配置清晰度分析提示词，返回默认结果")
             return self._get_default_analysis_result('clarity_analysis')
         
         try:
-            prompt_template = Template(clarity_prompt)
-            formatted_prompt = prompt_template.safe_substitute(document=content)
+            formatted_prompt = format_prompt_template(clarity_prompt, document=content)
             messages = [
                 SystemMessage(content="你是一位资深的需求分析专家。"),
                 HumanMessage(content=formatted_prompt)
             ]
             
             response = safe_llm_invoke(self.llm, messages)
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            
-            if json_match:
-                return json.loads(json_match.group(1))
+            result = extract_json_from_response(response.content)
+            if result:
+                logger.info(f"清晰度分析完成，评分: {result.get('overall_score', 'N/A')}")
+                return result
             else:
                 logger.warning("清晰度分析未返回JSON格式，使用默认结果")
                 return self._get_default_analysis_result('clarity_analysis')
@@ -2070,14 +2150,13 @@ class RequirementReviewEngine:
     def _analyze_global_structure(self, document: RequirementDocument) -> dict:
         """分析文档的全局结构和上下文"""
 
-        # 从数据库获取用户的提示词
         global_prompt = self._get_user_prompt('global_analysis')
         if not global_prompt:
             raise ValueError("用户未配置全局分析提示词，请先在提示词管理中配置")
 
         try:
-            prompt_template = Template(global_prompt)
-            formatted_prompt = prompt_template.safe_substitute(
+            formatted_prompt = format_prompt_template(
+                global_prompt,
                 title=document.title,
                 description=document.description or "无描述",
                 content=document.content[:6000]
@@ -2089,13 +2168,9 @@ class RequirementReviewEngine:
 
             response = safe_llm_invoke(self.llm, messages)
 
-            # 提取JSON内容
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                global_analysis = json.loads(json_str)
-            else:
-                # 如果没有找到JSON，返回默认结构
+            global_analysis = extract_json_from_response(response.content)
+            if not global_analysis:
+                logger.warning("全局分析未返回有效JSON，使用默认结构")
                 global_analysis = self._get_default_global_analysis()
 
             logger.info(f"全局分析完成，总体评分: {global_analysis.get('overall_score', 0)}")
@@ -2127,14 +2202,13 @@ class RequirementReviewEngine:
     def _analyze_single_module(self, module: RequirementModule, global_context: dict) -> dict:
         """分析单个模块"""
 
-        # 从数据库获取用户的提示词
         module_prompt = self._get_user_prompt('module_analysis')
         if not module_prompt:
             raise ValueError("用户未配置模块分析提示词，请先在提示词管理中配置")
 
         try:
-            prompt_template = Template(module_prompt)
-            formatted_prompt = prompt_template.safe_substitute(
+            formatted_prompt = format_prompt_template(
+                module_prompt,
                 module_id=str(module.id),
                 module_title=module.title,
                 module_content=module.content[:3000],
@@ -2149,12 +2223,9 @@ class RequirementReviewEngine:
 
             response = safe_llm_invoke(self.llm, messages)
 
-            # 提取JSON内容
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                analysis = json.loads(json_str)
-                analysis['module_id'] = str(module.id)  # 确保ID正确
+            analysis = extract_json_from_response(response.content)
+            if analysis:
+                analysis['module_id'] = str(module.id)
                 return analysis
             else:
                 return self._get_default_module_analysis(module)
@@ -2170,18 +2241,16 @@ class RequirementReviewEngine:
                                         module_analyses: List[dict], global_context: dict) -> dict:
         """分析跨模块一致性"""
 
-        # 从数据库获取用户的提示词
         consistency_prompt = self._get_user_prompt('consistency_analysis')
         if not consistency_prompt:
             raise ValueError("用户未配置一致性分析提示词，请先在提示词管理中配置")
 
         try:
-            # 准备上下文数据
             context_str = json.dumps(global_context, ensure_ascii=False, indent=2)
             analyses_str = json.dumps(module_analyses, ensure_ascii=False, indent=2)
 
-            prompt_template = Template(consistency_prompt)
-            formatted_prompt = prompt_template.safe_substitute(
+            formatted_prompt = format_prompt_template(
+                consistency_prompt,
                 global_context=context_str[:2000],
                 module_analyses=analyses_str[:4000]
             )
@@ -2192,12 +2261,8 @@ class RequirementReviewEngine:
 
             response = safe_llm_invoke(self.llm, messages)
 
-            # 提取JSON内容
-            json_match = re.search(r'```json\s*(.*?)\s*```', response.content, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                consistency_analysis = json.loads(json_str)
-            else:
+            consistency_analysis = extract_json_from_response(response.content)
+            if not consistency_analysis:
                 consistency_analysis = self._get_default_consistency_analysis()
 
             logger.info(f"一致性分析完成，一致性评分: {consistency_analysis.get('consistency_score', 0)}")

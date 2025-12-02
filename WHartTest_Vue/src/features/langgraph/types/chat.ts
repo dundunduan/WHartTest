@@ -60,6 +60,8 @@ export interface ChatHistoryResponseData {
   prompt_id: number | null; // 🆕 新增提示词ID字段
   prompt_name: string | null; // 🆕 新增提示词名称字段
   history: ChatHistoryMessage[];
+  context_token_count?: number; // 上下文Token使用量
+  context_limit?: number; // 上下文Token限制
 }
 
 /**

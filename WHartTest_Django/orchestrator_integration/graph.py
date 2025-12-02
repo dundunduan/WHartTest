@@ -2,7 +2,7 @@
 """LangGraph智能编排图实现 - 所有Agent都能自主调用MCP工具和知识库"""
 import json
 import logging
-from typing import TypedDict, Annotated, List, Literal
+from typing import TypedDict, Annotated, List, Literal, Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AnyMessage
 from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from langchain.tools import Tool
 
 from .prompts import get_agent_prompt
+from .context_compression import CompressionSettings, CompressionResult, ConversationCompressor
 from knowledge.models import KnowledgeBase
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ class OrchestratorState(TypedDict):
     reason: str
     current_step: int
     max_steps: int
+    # 上下文压缩相关
+    context_summary: Optional[str]
+    summarized_message_count: int
+    context_token_count: int
 
 
 def create_knowledge_tool(project_id: int, max_retries: int = 3) -> Tool:
@@ -116,10 +121,25 @@ def create_knowledge_tool(project_id: int, max_retries: int = 3) -> Tool:
 class AgentNodes:
     """Agent节点实现 - 所有Agent都能使用MCP工具和知识库"""
     
-    def __init__(self, llm: ChatOpenAI, user=None, mcp_tools=None, project_id=None):
+    def __init__(
+        self,
+        llm: ChatOpenAI,
+        user=None,
+        mcp_tools=None,
+        project_id=None,
+        compression_settings: Optional[CompressionSettings] = None,
+        model_name: Optional[str] = None
+    ):
         self.llm = llm
         self.user = user
         self.project_id = project_id
+        
+        # 初始化上下文压缩器
+        self.context_compressor = ConversationCompressor(
+            llm=llm,
+            model_name=model_name or getattr(llm, "model_name", "gpt-4o"),
+            settings=compression_settings or CompressionSettings(),
+        )
         
         # 创建完整的工具列表：MCP工具 + 知识库工具（用于子Agent）
         self.all_tools = list(mcp_tools or [])
@@ -153,6 +173,36 @@ class AgentNodes:
         else:
             # 没有工具时，返回None，调用方会直接使用LLM
             return None
+    
+    async def _prepare_context(self, state: OrchestratorState) -> CompressionResult:
+        """准备上下文：执行Token检查和压缩"""
+        try:
+            return await self.context_compressor.prepare(
+                messages=state.get("messages", []),
+                summary_text=state.get("context_summary"),
+                summarized_count=state.get("summarized_message_count", 0),
+            )
+        except Exception as exc:
+            logger.error("上下文压缩失败: %s", exc, exc_info=True)
+            return CompressionResult(
+                messages=list(state.get("messages", [])),
+                summary_message=None,
+                state_updates={},
+                triggered=False,
+                token_count=state.get("context_token_count", 0) or 0,
+            )
+    
+    def _render_history(self, messages: List[AnyMessage]) -> str:
+        """渲染消息历史为文本（用于Brain状态分析）"""
+        history_lines = []
+        for msg in messages:
+            label = getattr(msg, "additional_kwargs", {}).get("agent", msg.__class__.__name__)
+            raw = getattr(msg, "content", "")
+            text = raw if isinstance(raw, str) else str(raw)
+            if len(text) > 160:
+                text = f"{text[:160]}..."
+            history_lines.append(f"- [{label}]: {text}")
+        return "\n".join(history_lines)
     
     def _get_executed_agents(self, state: OrchestratorState) -> set:
         """获取已执行过的Agent集合"""
@@ -262,6 +312,9 @@ class AgentNodes:
         """
         logger.info("=== Brain Agent决策（ReAct + 状态机）===")
         
+        # 执行上下文压缩
+        compression = await self._prepare_context(state)
+        
         current_step = state.get("current_step", 0)
         max_steps = state.get("max_steps", 10)
         
@@ -278,13 +331,9 @@ class AgentNodes:
         # 🔧 关键：包含完整的对话历史，让Brain LLM自己判断是否需要继续
         brain_prompt = await get_agent_prompt('brain', self.user)
         
-        # 构建对话历史摘要（最近10条消息）
+        # 构建对话历史摘要（使用压缩后的消息）
         messages = state.get('messages', [])
-        recent_messages = messages[-10:] if len(messages) > 10 else messages
-        conversation_history = "\n".join([
-            f"- [{msg.__class__.__name__}] {msg.additional_kwargs.get('agent', 'user') if isinstance(msg, AIMessage) else 'user'}: {msg.content[:100]}..."
-            for msg in recent_messages
-        ])
+        conversation_history = self._render_history(compression.messages)
         
         state_context = f"""当前任务状态分析：
 
@@ -296,8 +345,9 @@ class AgentNodes:
 - 需求分析: {'✅ 已完成' if state.get('requirement_analysis') else '❌ 未完成'}
 - 测试用例: {'✅ 已完成' if state.get('testcases') else '❌ 未完成'}
 - 当前步骤: {current_step + 1}/{max_steps}
+- 上下文Token: {compression.token_count}/{self.context_compressor.settings.max_context_tokens}
 
-📜 最近对话历史:
+📜 对话上下文（已自动压缩）:
 {conversation_history}
 
 ⚠️ 重要规则（状态机约束）:
@@ -455,18 +505,20 @@ class AgentNodes:
                 messages_to_add.append(user_response_message)
                 logger.info(f"[Brain] 最终用户回复:\n{final_response.content}")
             
-            return {
+            result_payload = {
                 "next_agent": next_agent,
                 "instruction": instruction,
                 "reason": reason,
                 "messages": messages_to_add,
                 "current_step": current_step + 1,
-                # 🔧 添加状态信息供流式输出使用（与格式化消息保持一致）
                 "executed_agents": executed_agents,
                 "requirement_analysis": state.get('requirement_analysis'),
                 "testcases": state.get('testcases'),
                 "max_steps": max_steps
             }
+            # 合并压缩状态更新
+            result_payload.update(compression.state_updates)
+            return result_payload
             
         except Exception as e:
             logger.error(f"[Brain] 决策失败: {e}", exc_info=True)
@@ -487,31 +539,32 @@ class AgentNodes:
                 }
             )
             
-            return {
+            fallback_result = {
                 "next_agent": next_agent,
                 "instruction": instruction,
                 "reason": reason,
                 "messages": [brain_decision],
                 "current_step": current_step + 1,
-                # 🔧 添加状态信息供流式输出使用（fallback情况）
                 "executed_agents": state.get('executed_agents', []),
                 "requirement_analysis": state.get('requirement_analysis'),
                 "testcases": state.get('testcases'),
                 "max_steps": state.get('max_steps', 10)
             }
+            fallback_result.update(compression.state_updates)
+            return fallback_result
     
     async def chat_node(self, state: OrchestratorState) -> dict:
         """Chat Agent - 支持MCP工具和知识库（异步版本）"""
         logger.info("=== Chat Agent处理对话 ===")
         
+        compression = await self._prepare_context(state)
         prompt = await get_agent_prompt('chat')
         instruction = state.get('instruction') or state.get('requirement')
         
         try:
             if self.all_tools:
                 logger.info(f"Chat Agent使用 {len(self.all_tools)} 个工具")
-                # 🔧 修复：传递完整历史消息以保持上下文
-                messages_with_prompt = [SystemMessage(content=prompt)] + state['messages']
+                messages_with_prompt = [SystemMessage(content=prompt)] + compression.messages
                 agent = create_react_agent(self.llm, self.all_tools)
                 result = await agent.ainvoke({"messages": messages_with_prompt})
                 
@@ -527,27 +580,31 @@ class AgentNodes:
                 additional_kwargs={
                     "agent": "chat",
                     "agent_type": "orchestrator_agent",
-                    "is_thinking_process": True  # 🎨 标记为内部思考过程
+                    "is_thinking_process": True
                 }
             )
             
-            return {"messages": [chat_message]}
+            result = dict(compression.state_updates)
+            result["messages"] = [chat_message]
+            return result
         except Exception as e:
             logger.error(f"对话处理失败: {e}", exc_info=True)
-            return {"messages": [AIMessage(content=f"对话失败: {e}")]}
+            result = dict(compression.state_updates)
+            result["messages"] = [AIMessage(content=f"对话失败: {e}")]
+            return result
     
     async def requirement_node(self, state: OrchestratorState) -> dict:
         """Requirement Agent - 支持MCP工具和知识库（异步版本）"""
         logger.info("=== Requirement Agent分析需求 ===")
         
+        compression = await self._prepare_context(state)
         prompt = await get_agent_prompt('requirement')
         instruction = state.get('instruction') or state.get('requirement')
         
         try:
             if self.all_tools:
                 logger.info(f"Requirement Agent使用 {len(self.all_tools)} 个工具")
-                # 🔧 修复：传递完整历史消息以保持上下文
-                messages_with_prompt = [SystemMessage(content=prompt)] + state['messages']
+                messages_with_prompt = [SystemMessage(content=prompt)] + compression.messages
                 agent = create_react_agent(self.llm, self.all_tools)
                 result = await agent.ainvoke({"messages": messages_with_prompt})
                 
@@ -570,14 +627,18 @@ class AgentNodes:
                 additional_kwargs={
                     "agent": "requirement",
                     "agent_type": "orchestrator_agent",
-                    "is_thinking_process": True  # 🎨 标记为内部思考过程
+                    "is_thinking_process": True
                 }
             )
             
-            return {"requirement_analysis": analysis, "messages": [requirement_message]}
+            result = dict(compression.state_updates)
+            result.update({"requirement_analysis": analysis, "messages": [requirement_message]})
+            return result
         except Exception as e:
             logger.error(f"需求分析失败: {e}", exc_info=True)
-            return {"requirement_analysis": {"error": str(e)}, "messages": [AIMessage(content=f"分析失败: {e}")]}
+            result = dict(compression.state_updates)
+            result.update({"requirement_analysis": {"error": str(e)}, "messages": [AIMessage(content=f"分析失败: {e}")]})
+            return result
     
 
     
@@ -585,6 +646,7 @@ class AgentNodes:
         """TestCase Agent - 支持MCP工具和知识库（异步版本）"""
         logger.info("=== TestCase Agent生成测试用例 ===")
         
+        compression = await self._prepare_context(state)
         prompt = await get_agent_prompt('testcase')
         requirement_analysis = state.get('requirement_analysis', {})
         knowledge_docs = state.get('knowledge_docs', [])
@@ -600,8 +662,7 @@ class AgentNodes:
         try:
             if self.all_tools:
                 logger.info(f"TestCase Agent使用 {len(self.all_tools)} 个工具")
-                # 🔧 修复：传递完整历史消息以保持上下文
-                messages_with_prompt = [SystemMessage(content=prompt)] + state['messages']
+                messages_with_prompt = [SystemMessage(content=prompt)] + compression.messages
                 agent = create_react_agent(self.llm, self.all_tools)
                 result = await agent.ainvoke({"messages": messages_with_prompt})
                 
@@ -625,17 +686,29 @@ class AgentNodes:
                 additional_kwargs={
                     "agent": "testcase",
                     "agent_type": "orchestrator_agent",
-                    "is_thinking_process": True  # 🎨 标记为内部思考过程
+                    "is_thinking_process": True
                 }
             )
             
-            return {"testcases": testcases, "messages": [testcase_message]}
+            result = dict(compression.state_updates)
+            result.update({"testcases": testcases, "messages": [testcase_message]})
+            return result
         except Exception as e:
             logger.error(f"测试用例生成失败: {e}", exc_info=True)
-            return {"testcases": [], "messages": [AIMessage(content=f"生成失败: {e}")]}
+            result = dict(compression.state_updates)
+            result.update({"testcases": [], "messages": [AIMessage(content=f"生成失败: {e}")]})
+            return result
 
 
-def create_orchestrator_graph(llm: ChatOpenAI, checkpointer=None, user=None, mcp_tools=None, project_id=None) -> StateGraph:
+def create_orchestrator_graph(
+    llm: ChatOpenAI,
+    checkpointer=None,
+    user=None,
+    mcp_tools=None,
+    project_id=None,
+    compression_settings: Optional[CompressionSettings] = None,
+    model_name: Optional[str] = None
+) -> StateGraph:
     """创建智能编排图
     
     Args:
@@ -644,9 +717,18 @@ def create_orchestrator_graph(llm: ChatOpenAI, checkpointer=None, user=None, mcp
         user: 可选的用户对象,用于获取用户自定义提示词
         mcp_tools: 可选的MCP工具列表
         project_id: 项目ID，用于创建知识库工具
+        compression_settings: 上下文压缩配置
+        model_name: 模型名称（用于Token计数）
     """
     
-    nodes = AgentNodes(llm, user, mcp_tools, project_id)
+    nodes = AgentNodes(
+        llm,
+        user,
+        mcp_tools,
+        project_id,
+        compression_settings=compression_settings,
+        model_name=model_name
+    )
     workflow = StateGraph(OrchestratorState)
     
     # 添加节点

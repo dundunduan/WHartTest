@@ -46,6 +46,8 @@
         :is-loading="isLoading"
         :has-prompts="hasPrompts"
         :supports-vision="currentLlmConfig?.supports_vision || false"
+        :context-token-count="contextTokenInfo.tokenCount"
+        :context-limit="contextTokenInfo.limit"
         v-model:brain-mode="isBrainMode"
         @send-message="handleSendMessage"
       />
@@ -74,14 +76,16 @@ import {
   batchDeleteChatHistory,
   getChatSessions,
   activeStreams,
-  clearStreamState
+  clearStreamState,
+  latestContextUsage
 } from '@/features/langgraph/services/chatService';
 import { listLlmConfigs, partialUpdateLlmConfig } from '@/features/langgraph/services/llmConfigService';
 import { getUserPrompts } from '@/features/prompts/services/promptService';
 import { 
   sendOrchestratorStreamMessage, 
   activeOrchestratorStreams,
-  clearOrchestratorStreamState
+  clearOrchestratorStreamState,
+  latestOrchestratorContextUsage
 } from '@/features/langgraph/services/orchestratorService';
 import type { ChatRequest } from '@/features/langgraph/types/chat';
 import type { LlmConfig } from '@/features/langgraph/types/llmConfig';
@@ -183,6 +187,50 @@ const currentLlmConfig = ref<LlmConfig | null>(null);
 // 项目store
 const projectStore = useProjectStore();
 const { getRefreshTrigger } = useLlmConfigRefresh();
+
+// 上下文Token使用信息（从流式状态中获取 - 支持普通聊天和Brain模式）
+const contextTokenInfo = computed(() => {
+  const defaultLimit = currentLlmConfig.value?.context_limit || 128000;
+  const id = sessionId.value;
+  if (!id) return { tokenCount: 0, limit: defaultLimit };
+  
+  // 优先检查Brain模式的流状态
+  const orchestratorStream = activeOrchestratorStreams.value[id];
+  if (orchestratorStream && orchestratorStream.contextTokenCount !== undefined) {
+    return {
+      tokenCount: orchestratorStream.contextTokenCount || 0,
+      limit: orchestratorStream.contextLimit || defaultLimit
+    };
+  }
+  
+  // 检查普通聊天模式的流状态
+  const chatStream = activeStreams.value[id];
+  if (chatStream && chatStream.contextTokenCount !== undefined) {
+    return {
+      tokenCount: chatStream.contextTokenCount || 0,
+      limit: chatStream.contextLimit || defaultLimit
+    };
+  }
+  
+  // Fallback: 优先使用Brain模式缓存，其次使用普通聊天缓存
+  const orchestratorCache = latestOrchestratorContextUsage.value[id];
+  if (orchestratorCache) {
+    return {
+      tokenCount: orchestratorCache.tokenCount,
+      limit: orchestratorCache.limit || defaultLimit
+    };
+  }
+  
+  const chatCache = latestContextUsage.value[id];
+  if (chatCache) {
+    return {
+      tokenCount: chatCache.tokenCount,
+      limit: chatCache.limit || defaultLimit
+    };
+  }
+  
+  return { tokenCount: 0, limit: defaultLimit };
+});
 
 // 组件引用
 const chatHeaderRef = ref<{ refreshPrompts: () => Promise<void> } | null>(null);
@@ -496,6 +544,14 @@ const loadChatHistory = async () => {
 
     if (response.status === 'success') {
       sessionId.value = response.data.session_id;
+
+      // 🆕 恢复该会话的Token使用信息
+      if (response.data.context_token_count !== undefined) {
+        const tokenCount = response.data.context_token_count || 0;
+        const limit = response.data.context_limit || 128000;
+        latestContextUsage.value[response.data.session_id] = { tokenCount, limit };
+        console.log(`🔄 恢复会话Token使用: ${tokenCount}/${limit}`);
+      }
 
       // 🆕 恢复该会话关联的提示词
       if (response.data.prompt_id !== null && response.data.prompt_id !== undefined) {

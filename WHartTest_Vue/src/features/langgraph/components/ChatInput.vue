@@ -42,6 +42,13 @@
         </div>
       </div>
 
+      <!-- Token 使用率指示器 -->
+      <TokenUsageIndicator
+        v-if="contextTokenCount > 0 || contextLimit > 0"
+        :current-tokens="contextTokenCount"
+        :max-tokens="contextLimit"
+      />
+
       <!-- 大脑模式按钮 -->
       <a-button
         class="brain-button"
@@ -76,16 +83,21 @@ import {
   Message 
 } from '@arco-design/web-vue';
 import { IconImage, IconClose, IconMindMapping } from '@arco-design/web-vue/es/icon';
+import TokenUsageIndicator from './TokenUsageIndicator.vue';
 
 interface Props {
   isLoading: boolean;
   supportsVision?: boolean; // 当前模型是否支持图片输入
   brainMode?: boolean; // 是否为大脑模式
+  contextTokenCount?: number; // 当前上下文Token数
+  contextLimit?: number; // 上下文Token限制
 }
 
 const props = withDefaults(defineProps<Props>(), {
   supportsVision: false,
-  brainMode: false
+  brainMode: false,
+  contextTokenCount: 0,
+  contextLimit: 128000
 });
 
 const emit = defineEmits<{
