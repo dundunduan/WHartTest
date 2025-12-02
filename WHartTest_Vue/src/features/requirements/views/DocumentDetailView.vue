@@ -21,7 +21,7 @@
           :loading="splitLoading"
         >
           <template #icon><icon-robot /></template>
-          AI智能拆分
+          模块拆分
         </a-button>
 
         <!-- 用户调整状态：显示确认按钮 -->
@@ -139,7 +139,7 @@
               <icon-file />
             </template>
           </a-step>
-          <a-step title="AI智能拆分" description="使用 AI 拆分文档生成模块">
+          <a-step title="模块拆分" description="拆分文档生成模块">
             <template #icon>
               <icon-scissor />
             </template>
@@ -333,7 +333,7 @@
           :loading="splitLoading"
         >
           <template #icon><icon-robot /></template>
-          AI智能拆分
+          模块拆分
         </a-button>
 
       </a-empty>
