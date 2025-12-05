@@ -64,6 +64,7 @@
           v-model:open-keys="openKeys"
           :auto-open-selected="true"
           :collapsed="collapsed"
+          :popup-max-height="false"
           class="menu"
         >
 
@@ -79,37 +80,25 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/requirements')">需求管理</a>
           </a-menu-item>
 
-          <!-- 展开状态下显示测试管理子菜单 -->
-          <template v-if="!collapsed && hasTestManagementMenuItems">
-            <a-sub-menu key="test-management">
-              <template #icon><icon-experiment /></template>
-              <template #title>
-                <span @click="handleTestManagementClick">测试管理</span>
-              </template>
-              <a-menu-item key="testcases" v-if="hasTestcasesPermission">
-                <template #icon><icon-code-block /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/testcases')">用例管理</a>
-              </a-menu-item>
-              <a-menu-item key="testsuites" v-if="hasTestSuitesPermission">
-                <template #icon><icon-folder /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/testsuites')">测试套件</a>
-              </a-menu-item>
-              <a-menu-item key="test-executions" v-if="hasTestExecutionsPermission">
-                <template #icon><icon-history /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/test-executions')">执行历史</a>
-              </a-menu-item>
-            </a-sub-menu>
-          </template>
-
-          <!-- 收起状态下只显示测试管理图标 -->
-          <template v-else-if="collapsed && hasTestManagementMenuItems">
-            <a-menu-item key="test-management">
-              <template #icon>
-                <icon-experiment @click="handleTestManagementClick" style="cursor: pointer;" />
-              </template>
-              <span style="display: none;">测试管理</span>
+          <!-- 测试管理子菜单 -->
+          <a-sub-menu key="test-management" v-if="hasTestManagementMenuItems">
+            <template #icon><icon-experiment /></template>
+            <template #title>
+              <span @click="handleTestManagementClick">测试管理</span>
+            </template>
+            <a-menu-item key="testcases" v-if="hasTestcasesPermission">
+              <template #icon><icon-code-block /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/testcases')">用例管理</a>
             </a-menu-item>
-          </template>
+            <a-menu-item key="testsuites" v-if="hasTestSuitesPermission">
+              <template #icon><icon-folder /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/testsuites')">测试套件</a>
+            </a-menu-item>
+            <a-menu-item key="test-executions" v-if="hasTestExecutionsPermission">
+              <template #icon><icon-history /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/test-executions')">执行历史</a>
+            </a-menu-item>
+          </a-sub-menu>
 
           <a-menu-item key="langgraph-chat" v-if="hasLangGraphChatPermission">
             <template #icon><icon-message /></template>
@@ -121,49 +110,37 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/knowledge-management')">知识库管理</a>
           </a-menu-item>
 
-          <!-- 展开状态下显示子菜单 -->
-          <template v-if="!collapsed && hasSystemMenuItems">
-            <a-sub-menu key="settings">
-              <template #icon><icon-settings /></template>
-              <template #title>
-                <span @click="handleSystemManagementClick">系统管理</span>
-              </template>
-              <a-menu-item key="users" v-if="hasUsersPermission">
-                <template #icon><icon-user /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/users')">用户管理</a>
-              </a-menu-item>
-              <a-menu-item key="organizations" v-if="hasOrganizationsPermission">
-                <template #icon><icon-apps /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/organizations')">组织管理</a>
-              </a-menu-item>
-              <a-menu-item key="permissions" v-if="hasPermissionsPermission">
-                <template #icon><icon-safe /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/permissions')">权限管理</a>
-              </a-menu-item>
-              <a-menu-item key="llm-configs" v-if="hasLlmConfigsPermission">
-                <template #icon><icon-tool /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/llm-configs')">LLM配置</a>
-              </a-menu-item>
-              <a-menu-item key="api-keys" v-if="hasApiKeysPermission">
-                <template #icon><icon-safe /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/api-keys')">KEY管理</a>
-              </a-menu-item>
-              <a-menu-item key="remote-mcp-configs" v-if="hasMcpConfigsPermission">
-                <template #icon><icon-cloud /></template>
-                <a href="#" @click="checkProjectAndNavigate($event, '/remote-mcp-configs')">MCP配置</a>
-              </a-menu-item>
-            </a-sub-menu>
-          </template>
-
-          <!-- 收起状态下只显示系统管理图标 -->
-          <template v-else-if="collapsed && hasSystemMenuItems">
-            <a-menu-item key="settings">
-              <template #icon>
-                <icon-settings @click="handleSystemManagementClick" style="cursor: pointer;" />
-              </template>
-              <span style="display: none;">系统管理</span>
+          <!-- 系统管理子菜单 -->
+          <a-sub-menu key="settings" v-if="hasSystemMenuItems">
+            <template #icon><icon-settings /></template>
+            <template #title>
+              <span @click="handleSystemManagementClick">系统管理</span>
+            </template>
+            <a-menu-item key="users" v-if="hasUsersPermission">
+              <template #icon><icon-user /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/users')">用户管理</a>
             </a-menu-item>
-          </template>
+            <a-menu-item key="organizations" v-if="hasOrganizationsPermission">
+              <template #icon><icon-apps /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/organizations')">组织管理</a>
+            </a-menu-item>
+            <a-menu-item key="permissions" v-if="hasPermissionsPermission">
+              <template #icon><icon-safe /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/permissions')">权限管理</a>
+            </a-menu-item>
+            <a-menu-item key="llm-configs" v-if="hasLlmConfigsPermission">
+              <template #icon><icon-tool /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/llm-configs')">LLM配置</a>
+            </a-menu-item>
+            <a-menu-item key="api-keys" v-if="hasApiKeysPermission">
+              <template #icon><icon-safe /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/api-keys')">KEY管理</a>
+            </a-menu-item>
+            <a-menu-item key="remote-mcp-configs" v-if="hasMcpConfigsPermission">
+              <template #icon><icon-cloud /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/remote-mcp-configs')">MCP配置</a>
+            </a-menu-item>
+          </a-sub-menu>
         </a-menu>
         <!-- 侧边栏底部收起/展开按钮 -->
         <div class="sider-footer">
@@ -720,6 +697,14 @@ onMounted(async () => {
 
 :deep(.arco-menu-light .arco-menu-inline-header.arco-menu-inline-header-open .arco-icon-down) {
   transform: rotate(180deg);
+}
+</style>
+
+<!-- 全局样式 - 用于菜单弹出层备用 -->
+<style>
+/* 备用样式：确保弹出菜单不受高度限制 */
+.arco-menu-pop .arco-menu-inner {
+  max-height: unset !important;
 }
 
 .main-layout {

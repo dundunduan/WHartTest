@@ -489,8 +489,6 @@ watch(
 .execution-log-container :deep(.log-ai-content) {
   padding: 8px 12px 12px 16px;
   border-top: 1px solid rgba(22, 93, 255, 0.1);
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 .execution-log-container :deep(.log-line.step) {
