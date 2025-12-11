@@ -28,7 +28,7 @@ from requirements.context_limits import context_checker, RESERVED_TOKENS
 from wharttest_django.checkpointer import get_async_checkpointer
 
 from .agent_loop import AgentOrchestrator
-from .models import AgentTask, AgentBlackboard
+from .models import AgentTask, AgentBlackboard, AgentStep
 from langgraph_integration.models import ChatSession, LLMConfig
 from langgraph_integration.views import (
     create_llm_instance,
@@ -422,6 +422,9 @@ class AgentLoopStreamAPIView(View):
         use_knowledge_base: bool = True,
         prompt_id: Optional[int] = None,
         image_base64: Optional[str] = None,
+        generate_playwright_script: bool = False,
+        test_case_id: Optional[int] = None,
+        use_pytest: bool = True,
     ):
         """创建 SSE 流式生成器"""
         # 用于收集所有消息的列表（会先加载历史消息）
@@ -515,6 +518,17 @@ class AgentLoopStreamAPIView(View):
                 except Exception as e:
                     logger.warning(f"AgentLoopStreamAPI: Knowledge tool creation failed: {e}")
 
+            # 5.5. 添加内置工具（Playwright 脚本管理等）
+            from orchestrator_integration.builtin_tools import get_builtin_tools
+            
+            builtin_tools = get_builtin_tools(
+                user_id=request.user.id,
+                project_id=int(project_id),
+                test_case_id=test_case_id,
+            )
+            mcp_tools_list.extend(builtin_tools)
+            logger.info(f"AgentLoopStreamAPI: Added {len(builtin_tools)} builtin tools")
+
             # 6. 获取或创建 ChatSession
             chat_session = await sync_to_async(
                 lambda: ChatSession.objects.filter(
@@ -548,6 +562,110 @@ class AgentLoopStreamAPIView(View):
             effective_prompt, prompt_source = await get_effective_system_prompt_async(
                 request.user, prompt_id, project
             )
+            
+            # 7.1 如果需要生成脚本，追加脚本生成指令
+            if generate_playwright_script:
+                script_instruction = """
+
+## 自动化脚本管理工具
+
+你可以使用以下工具管理自动化脚本：
+
+### 可用工具列表
+- `save_playwright_script(script_content, test_case_id, description)` - 保存新的 Playwright 脚本
+- `list_playwright_scripts(test_case_id, keyword, limit)` - 列出脚本列表
+- `get_playwright_script(script_id)` - 获取脚本详情和代码
+- `update_playwright_script(script_id, script_content, description)` - 更新已有脚本
+- `execute_playwright_script(script_id, headless, record_video)` - 执行脚本
+- `get_script_execution_result(execution_id, script_id)` - 获取执行结果
+
+### 执行流程
+1. **执行测试步骤**：使用 Playwright MCP 工具执行测试用例中的所有步骤
+2. **生成脚本**：所有步骤执行完成后，根据执行过程生成完整的 Playwright Python 脚本
+3. **保存脚本**：调用 `save_playwright_script` 工具保存脚本
+
+### 脚本要求
+生成的脚本必须是**标准的自动化测试脚本**，包含：
+- `from playwright.sync_api import sync_playwright, expect` 导入
+- `run()` 函数定义
+- 所有测试步骤对应的 Playwright Python 代码
+- 使用准确的选择器（根据实际执行时使用的选择器）
+- 适当的错误处理（try/finally 确保浏览器关闭）
+- **每个关键步骤后添加截图**（用于执行报告）
+- **适当的 print 输出**（记录执行进度）
+- **断言验证**（验证每个操作的预期结果）
+
+### 断言示例
+使用 Playwright 的 `expect` API 进行断言：
+- `expect(page).to_have_url("...")` - 验证 URL
+- `expect(page).to_have_title("...")` - 验证标题
+- `expect(page.locator("...")).to_be_visible()` - 验证元素可见
+- `expect(page.locator("...")).to_have_text("...")` - 验证文本内容
+- `expect(page.locator("...")).to_have_count(n)` - 验证元素数量
+- `expect(page.locator("...")).to_be_enabled()` - 验证元素可用
+
+### 脚本模板
+```python
+from playwright.sync_api import sync_playwright, expect
+
+
+def run():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+        page.set_default_timeout(30000)
+        
+        step = 0
+        
+        try:
+            # 步骤1: 打开页面
+            step += 1
+            page.goto("https://example.com")
+            expect(page).to_have_title("Example Title")  # 断言：验证页面标题
+            print(f"步骤{step}: 打开页面成功")
+            page.screenshot(path=f"step{step}_open_page.png")
+            
+            # 步骤2: 输入用户名
+            step += 1
+            username_input = page.get_by_role('textbox', name='用户名')
+            username_input.fill('admin')
+            expect(username_input).to_have_value('admin')  # 断言：验证输入值
+            print(f"步骤{step}: 输入用户名成功")
+            page.screenshot(path=f"step{step}_input_username.png")
+            
+            # 步骤3: 点击登录
+            step += 1
+            page.get_by_role('button', name='登录').click()
+            expect(page).to_have_url("**/dashboard")  # 断言：验证跳转URL
+            expect(page.locator('.welcome-message')).to_be_visible()  # 断言：验证欢迎信息显示
+            print(f"步骤{step}: 点击登录成功")
+            page.screenshot(path=f"step{step}_click_login.png")
+            
+            print(f"测试执行成功, 共执行 {step} 个步骤, 所有断言通过")
+        except Exception as e:
+            print(f"步骤{step}执行失败: {e}")
+            page.screenshot(path="error_screenshot.png")
+            raise
+        finally:
+            context.close()
+            browser.close()
+
+
+if __name__ == "__main__":
+    run()
+```
+
+### 重要提示
+- 脚本必须是 **Python** 语法，不是 JavaScript
+- 使用 `page.get_by_role()`, `page.locator()` 等方法
+- 在所有测试步骤执行完成后再生成脚本
+- **禁止在脚本中使用 emoji 字符**（如 ✅ ❌ 等），使用纯文本描述
+- **每个步骤后必须截图**，截图文件名格式: `step{N}_{action}.png`
+- **每个步骤后必须 print**，输出格式: `步骤{N}: {描述}成功`
+- **关键操作必须有断言**，验证操作的预期结果
+"""
+                effective_prompt = (effective_prompt or '') + script_instruction
 
             # 7.5 加载历史对话摘要（跨对话上下文，根据模型context_limit判断是否需要AI摘要）
             conversation_summary = await self._load_conversation_summary(
@@ -1041,13 +1159,20 @@ class AgentLoopStreamAPIView(View):
                     # 对话历史已在每步保存，此处无需重复保存
                     logger.info(f"AgentLoopStreamAPI: Task completed, history already saved ({len(conversation_messages)} messages)")
                     
-                    # ✅ Token统计已移至每步完成后实时计算,此处不再重复
-                    
-                    yield create_sse_data({
+                    complete_data = {
                         'type': 'complete',
                         'total_steps': step_count,
                         'task_id': task.id
-                    })
+                    }
+                    
+                    # Playwright 脚本管理工具已通过 builtin_tools 加载
+                    if generate_playwright_script:
+                        complete_data['script_generation'] = {
+                            'enabled': True,
+                            'message': '脚本管理工具已启用（保存/查询/执行等）'
+                        }
+                    
+                    yield create_sse_data(complete_data)
                     break
 
                 # 检查错误：工具调用失败时继续循环让 LLM 重试
@@ -1141,6 +1266,11 @@ class AgentLoopStreamAPIView(View):
         use_knowledge_base = body_data.get('use_knowledge_base', True)
         prompt_id = body_data.get('prompt_id')
         image_base64 = body_data.get('image')
+        
+        # Playwright 脚本生成参数
+        generate_playwright_script = body_data.get('generate_playwright_script', False)
+        test_case_id = body_data.get('test_case_id')  # 用于关联生成的脚本
+        use_pytest = body_data.get('use_pytest', True)  # 生成 pytest 格式还是简单格式
 
         # 3. 参数验证
         if not project_id:
@@ -1175,7 +1305,8 @@ class AgentLoopStreamAPIView(View):
         async def async_generator():
             async for chunk in self._create_stream_generator(
                 request, user_message, session_id, project_id, project,
-                knowledge_base_id, use_knowledge_base, prompt_id, image_base64
+                knowledge_base_id, use_knowledge_base, prompt_id, image_base64,
+                generate_playwright_script, test_case_id, use_pytest
             ):
                 yield chunk
 

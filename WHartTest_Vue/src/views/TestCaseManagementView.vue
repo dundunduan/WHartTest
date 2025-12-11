@@ -57,6 +57,12 @@
       :test-case-module-tree="moduleTreeForForm"
       @submit="handleGenerateCasesSubmit"
     />
+    
+    <ExecuteTestCaseModal
+      v-model:visible="isExecuteModalVisible"
+      :test-case="pendingExecuteTestCase"
+      @confirm="handleExecuteConfirm"
+    />
   </div>
 </template>
 
@@ -75,6 +81,7 @@ import TestCaseList from '@/components/testcase/TestCaseList.vue';
 import TestCaseForm from '@/components/testcase/TestCaseForm.vue';
 import TestCaseDetail from '@/components/testcase/TestCaseDetail.vue';
 import GenerateCasesModal from '@/components/testcase/GenerateCasesModal.vue';
+import ExecuteTestCaseModal from '@/components/testcase/ExecuteTestCaseModal.vue';
 import {
   sendChatMessageStream
 } from '@/features/langgraph/services/chatService';
@@ -89,6 +96,8 @@ const selectedModuleId = ref<number | null>(null);
 const currentEditingTestCaseId = ref<number | null>(null);
 const currentViewingTestCaseId = ref<number | null>(null);
 const isGenerateCasesModalVisible = ref(false);
+const isExecuteModalVisible = ref(false);
+const pendingExecuteTestCase = ref<TestCase | null>(null);
 
 const modulePanelRef = ref<InstanceType<typeof ModuleManagementPanel> | null>(null);
 const testCaseListRef = ref<InstanceType<typeof TestCaseList> | null>(null);
@@ -309,6 +318,17 @@ const handleExecuteTestCase = (testCase: TestCase) => {
     Message.error('缺少有效的项目ID');
     return;
   }
+  
+  // 保存待执行的用例并显示确认弹窗
+  pendingExecuteTestCase.value = testCase;
+  isExecuteModalVisible.value = true;
+};
+
+const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean; usePytest: boolean }) => {
+  const testCase = pendingExecuteTestCase.value;
+  if (!testCase || !currentProjectId.value) {
+    return;
+  }
 
   const moduleInfo = testCase.module_detail
     ? testCase.module_detail
@@ -334,15 +354,25 @@ const handleExecuteTestCase = (testCase: TestCase) => {
     message,
     project_id: String(currentProjectId.value),
     use_knowledge_base: false,
+    // Playwright 脚本生成参数
+    generate_playwright_script: options.generatePlaywrightScript,
+    test_case_id: options.generatePlaywrightScript ? testCase.id : undefined,
+    use_pytest: options.usePytest,
   };
+
+  const notificationContent = options.generatePlaywrightScript
+    ? '测试用例执行任务已在后台开始处理，完成后将自动生成 Playwright 脚本。'
+    : '测试用例执行任务已在后台开始处理。';
 
   startAutomationTask(
     requestData,
     '执行已开始',
-    '测试用例执行任务已在后台开始处理。',
+    notificationContent,
     'exec-case',
     '点此查看执行进度'
   );
+  
+  pendingExecuteTestCase.value = null;
 };
 
 watch(currentProjectId, (newVal) => {

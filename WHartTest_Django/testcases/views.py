@@ -819,3 +819,213 @@ class TestExecutionViewSet(viewsets.ModelViewSet):
             'message': f'测试执行记录已删除',
             'deleted_execution': execution_info
         }, status=status.HTTP_200_OK)
+
+
+# ====================== 自动化用例相关 ======================
+
+from .models import AutomationScript, ScriptExecution
+from .serializers import (
+    AutomationScriptSerializer, AutomationScriptListSerializer,
+    ScriptExecutionSerializer, ExecuteScriptSerializer
+)
+from .script_executor import execute_automation_script
+
+
+class AutomationScriptViewSet(viewsets.ModelViewSet):
+    """
+    自动化用例视图集
+    
+    提供脚本的 CRUD 操作、生成和执行功能
+    """
+    queryset = AutomationScript.objects.all()
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'description', 'test_case__name']
+    ordering_fields = ['created_at', 'updated_at', 'name', 'version']
+    ordering = ['-created_at']
+    filterset_fields = ['test_case', 'script_type', 'source', 'status', 'test_case__project']
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return AutomationScriptListSerializer
+        return AutomationScriptSerializer
+    
+    def get_permissions(self):
+        return [
+            permissions.IsAuthenticated(),
+            HasModelPermission(),
+        ]
+    
+    def get_queryset(self):
+        queryset = AutomationScript.objects.select_related(
+            'test_case', 'test_case__project', 'creator', 'source_task'
+        )
+        
+        # 支持按项目过滤
+        project_id = self.request.query_params.get('project_id')
+        if project_id:
+            queryset = queryset.filter(test_case__project_id=project_id)
+        
+        # 非管理员只能看到自己所属项目的脚本
+        user = self.request.user
+        if not user.is_superuser:
+            # 获取用户所属的项目 ID 列表
+            user_project_ids = user.project_memberships.values_list('project_id', flat=True)
+            queryset = queryset.filter(test_case__project_id__in=user_project_ids)
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        serializer.save(creator=self.request.user)
+    
+    def _check_project_access(self, project_id):
+        """检查用户是否有项目访问权限"""
+        user = self.request.user
+        if user.is_superuser:
+            return True
+        return user.project_memberships.filter(project_id=project_id).exists()
+    
+    @action(detail=True, methods=['post'], url_path='execute')
+    def execute(self, request, pk=None):
+        """
+        执行自动化用例
+        
+        POST /api/automation-scripts/{id}/execute/
+        {
+            "headless": true,
+            "record_video": false
+        }
+        """
+        script = self.get_object()
+        
+        # 权限检查：验证用户有该项目的访问权限
+        if not self._check_project_access(script.test_case.project_id):
+            return Response(
+                {'error': '无权访问该项目'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        serializer = ExecuteScriptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        headless = serializer.validated_data.get('headless', script.headless)
+        record_video = serializer.validated_data.get('record_video', False)
+        
+        try:
+            execution = execute_automation_script(
+                script=script,
+                executor=request.user,
+                headless=headless,
+                record_video=record_video
+            )
+            
+            return Response(
+                ScriptExecutionSerializer(execution).data,
+                status=status.HTTP_201_CREATED
+            )
+            
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'执行脚本失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['get'], url_path='executions')
+    def executions(self, request, pk=None):
+        """
+        获取脚本的执行历史
+        
+        GET /api/automation-scripts/{id}/executions/
+        """
+        script = self.get_object()
+        executions = script.executions.all().order_by('-created_at')
+        
+        # 分页
+        page = self.paginate_queryset(executions)
+        if page is not None:
+            serializer = ScriptExecutionSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = ScriptExecutionSerializer(executions, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'], url_path='regenerate')
+    def regenerate(self, request, pk=None):
+        """
+        重新生成脚本内容（基于 recorded_steps）
+        
+        POST /api/automation-scripts/{id}/regenerate/
+        {
+            "use_pytest": true
+        }
+        """
+        script = self.get_object()
+        
+        if not script.recorded_steps:
+            return Response(
+                {'error': '该脚本没有记录的操作步骤，无法重新生成'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        use_pytest = request.data.get('use_pytest', True)
+        
+        try:
+            from .script_generator import PlaywrightScriptGenerator
+            
+            generator = PlaywrightScriptGenerator(use_pytest=use_pytest)
+            new_content = generator.generate_script(
+                recorded_steps=script.recorded_steps,
+                test_case_name=script.test_case.name,
+                target_url=script.target_url or '',
+                timeout_seconds=script.timeout_seconds,
+                headless=script.headless,
+                description=script.description or ''
+            )
+            
+            # 更新脚本内容和版本
+            script.script_content = new_content
+            script.version += 1
+            script.save()
+            
+            return Response(AutomationScriptSerializer(script).data)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'重新生成失败: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ScriptExecutionViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    脚本执行记录视图集（只读）
+    """
+    queryset = ScriptExecution.objects.all()
+    serializer_class = ScriptExecutionSerializer
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['script', 'status', 'executor']
+    ordering_fields = ['created_at', 'execution_time']
+    ordering = ['-created_at']
+    
+    def get_permissions(self):
+        return [
+            permissions.IsAuthenticated(),
+            HasModelPermission(),
+        ]
+    
+    def get_queryset(self):
+        queryset = ScriptExecution.objects.select_related(
+            'script', 'script__test_case', 'script__test_case__project', 'executor'
+        )
+        
+        # 非管理员只能看到自己所属项目的执行记录
+        user = self.request.user
+        if not user.is_superuser:
+            user_project_ids = user.project_memberships.values_list('project_id', flat=True)
+            queryset = queryset.filter(script__test_case__project_id__in=user_project_ids)
+        
+        return queryset

@@ -103,6 +103,10 @@
               <template #icon><icon-history /></template>
               <a href="#" @click="checkProjectAndNavigate($event, '/test-executions')">执行历史</a>
             </a-menu-item>
+            <a-menu-item key="automation-scripts" v-if="hasAutomationScriptsPermission">
+              <template #icon><icon-robot /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/automation-scripts')">自动化用例</a>
+            </a-menu-item>
           </a-sub-menu>
 
           <a-menu-item key="langgraph-chat" v-if="hasLangGraphChatPermission">
@@ -209,6 +213,7 @@ import {
   IconFolder,
   IconHistory,
   IconExperiment,
+  IconRobot,
 } from '@arco-design/web-vue/es/icon';
 import '@arco-design/web-vue/dist/arco.css'; // 引入 Arco Design 样式
 
@@ -240,6 +245,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/requirements')) return 'requirements'; // 添加对需求管理路由的识别
   if (path.startsWith('/testsuites')) return 'testsuites'; // 添加对测试套件路由的识别
   if (path.startsWith('/test-executions')) return 'test-executions'; // 添加对执行历史路由的识别
+  if (path.startsWith('/automation-scripts')) return 'automation-scripts'; // 添加对自动化用例路由的识别
   if (path.startsWith('/testcases')) return 'testcases';
   if (path.startsWith('/users')) return 'users';
   if (path.startsWith('/organizations')) return 'organizations';
@@ -279,6 +285,10 @@ const hasTestSuitesPermission = computed(() => {
 
 const hasTestExecutionsPermission = computed(() => {
   return authStore.hasPermission('testcases.view_testexecution');
+});
+
+const hasAutomationScriptsPermission = computed(() => {
+  return authStore.hasPermission('testcases.view_automationscript');
 });
 
 const hasLangGraphChatPermission = computed(() => {
@@ -322,7 +332,8 @@ const hasMcpConfigsPermission = computed(() => {
 const hasTestManagementMenuItems = computed(() => {
   return hasTestcasesPermission.value ||
          hasTestSuitesPermission.value ||
-         hasTestExecutionsPermission.value;
+         hasTestExecutionsPermission.value ||
+         hasAutomationScriptsPermission.value;
 });
 
 // 检查是否有系统管理菜单项的权限

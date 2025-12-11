@@ -33,6 +33,13 @@ interface StreamState {
   currentStep?: number;  // Agent Loop 当前步骤
   maxSteps?: number;     // Agent Loop 最大步骤数
   userMessage?: string;  // 用户发送的消息内容
+  taskId?: number;       // Agent Task ID
+  // ⭐ 脚本生成信息
+  scriptGeneration?: {
+    available: boolean;
+    playwrightSteps: number;
+    message: string;
+  };
 }
 
 // Agent Loop SSE 事件类型定义（供文档和类型参考）
@@ -518,6 +525,21 @@ export async function sendChatMessageStream(
             // ✅ 修复：标记完成，保持content不变（Vue组件会从content读取最终消息）
             // 不清空content，因为displayedMessages和watch都依赖stream.content来显示最终AI回复
             activeStreams.value[streamSessionId].isComplete = true;
+            
+            // ⭐ 保存任务 ID
+            if (parsed.task_id) {
+              activeStreams.value[streamSessionId].taskId = parsed.task_id;
+            }
+            
+            // ⭐ 处理脚本生成信息
+            if (parsed.script_generation && parsed.script_generation.available) {
+              activeStreams.value[streamSessionId].scriptGeneration = {
+                available: true,
+                playwrightSteps: parsed.script_generation.playwright_steps || 0,
+                message: parsed.script_generation.message || '可生成自动化用例'
+              };
+              console.log('[ChatService] Script generation available:', parsed.script_generation);
+            }
           }
         } catch (e) {
           console.warn('Failed to parse SSE data:', jsonData);

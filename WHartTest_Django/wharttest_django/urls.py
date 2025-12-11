@@ -27,12 +27,15 @@ from accounts.views import MyTokenObtainPairView # 修改为导入自定义视�
 from projects.views import ProjectViewSet # 导入 ProjectViewSet
 from testcases.views import (
     TestCaseViewSet, TestCaseModuleViewSet,
-    TestSuiteViewSet, TestExecutionViewSet
-)  # 导入 TestCase、TestCaseModule、TestSuite 和 TestExecution 视图集
+    TestSuiteViewSet, TestExecutionViewSet,
+    AutomationScriptViewSet, ScriptExecutionViewSet
+)  # 导入 TestCase、TestCaseModule、TestSuite、TestExecution 和自动化用例视图集
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 
 router = DefaultRouter()
 router.register(r'projects', ProjectViewSet, basename='project')
+router.register(r'automation-scripts', AutomationScriptViewSet, basename='automation-scripts')
+router.register(r'script-executions', ScriptExecutionViewSet, basename='script-executions')
 
 projects_router = NestedSimpleRouter(router, r'projects', lookup='project')
 projects_router.register(r'testcases', TestCaseViewSet, basename='project-testcases')

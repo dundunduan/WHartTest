@@ -2,7 +2,8 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
     TestCase, TestCaseStep, TestCaseModule, TestCaseScreenshot,
-    TestSuite, TestExecution, TestCaseResult
+    TestSuite, TestExecution, TestCaseResult,
+    AutomationScript, ScriptExecution
 )
 from projects.models import Project # 确保导入Project模型以便进行校验
 from accounts.serializers import UserDetailSerializer # 用于显示创建者信息
@@ -437,3 +438,91 @@ class TestExecutionCreateSerializer(serializers.Serializer):
             return value
         except TestSuite.DoesNotExist:
             raise serializers.ValidationError("测试套件不存在")
+
+
+class ScriptExecutionSerializer(serializers.ModelSerializer):
+    """脚本执行记录序列化器"""
+    executor_detail = UserDetailSerializer(source='executor', read_only=True)
+    
+    class Meta:
+        model = ScriptExecution
+        fields = [
+            'id', 'script', 'status', 'started_at', 'completed_at',
+            'execution_time', 'output', 'error_message', 'stack_trace',
+            'screenshots', 'videos', 'browser_type', 'viewport', 'executor',
+            'executor_detail', 'created_at', 'duration'
+        ]
+        read_only_fields = [
+            'id', 'started_at', 'completed_at', 'execution_time',
+            'output', 'error_message', 'stack_trace', 'screenshots', 'videos',
+            'executor_detail', 'created_at', 'duration'
+        ]
+
+
+class AutomationScriptSerializer(serializers.ModelSerializer):
+    """自动化用例序列化器"""
+    test_case_name = serializers.CharField(source='test_case.name', read_only=True)
+    creator_detail = UserDetailSerializer(source='creator', read_only=True)
+    project_id = serializers.IntegerField(source='test_case.project_id', read_only=True)
+    latest_execution = serializers.SerializerMethodField()
+    execution_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = AutomationScript
+        fields = [
+            'id', 'test_case', 'test_case_name', 'source_task', 'name',
+            'description', 'script_type', 'source', 'status',
+            'script_content', 'recorded_steps', 'target_url',
+            'timeout_seconds', 'headless', 'version',
+            'creator', 'creator_detail', 'project_id',
+            'created_at', 'updated_at',
+            'latest_execution', 'execution_count'
+        ]
+        read_only_fields = [
+            'id', 'source_task', 'recorded_steps', 'version',
+            'creator', 'creator_detail', 'project_id',
+            'created_at', 'updated_at',
+            'latest_execution', 'execution_count'
+        ]
+    
+    def get_latest_execution(self, obj):
+        """获取最近一次执行记录"""
+        execution = obj.executions.order_by('-created_at').first()
+        if execution:
+            return {
+                'id': execution.id,
+                'status': execution.status,
+                'created_at': execution.created_at,
+                'execution_time': execution.execution_time
+            }
+        return None
+    
+    def get_execution_count(self, obj):
+        """获取执行次数"""
+        return obj.executions.count()
+
+
+class AutomationScriptListSerializer(serializers.ModelSerializer):
+    """自动化用例列表序列化器（简化版）"""
+    test_case_name = serializers.CharField(source='test_case.name', read_only=True)
+    creator_name = serializers.CharField(source='creator.username', read_only=True)
+    latest_status = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = AutomationScript
+        fields = [
+            'id', 'name', 'test_case', 'test_case_name', 'script_type',
+            'source', 'status', 'version', 'target_url',
+            'creator_name', 'created_at', 'latest_status'
+        ]
+    
+    def get_latest_status(self, obj):
+        """获取最近执行状态"""
+        execution = obj.executions.order_by('-created_at').first()
+        return execution.status if execution else None
+
+
+class ExecuteScriptSerializer(serializers.Serializer):
+    """执行脚本的请求序列化器"""
+    headless = serializers.BooleanField(default=True, required=False, help_text="是否无头模式")
+    record_video = serializers.BooleanField(default=False, required=False, help_text="是否录屏")

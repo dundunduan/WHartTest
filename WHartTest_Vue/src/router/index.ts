@@ -20,6 +20,7 @@ import RequirementManagementView from '@/features/requirements/views/Requirement
 import DocumentDetailView from '@/features/requirements/views/DocumentDetailView.vue'; // 导入文档详情视图
 import SpecializedReportView from '@/features/requirements/views/SpecializedReportView.vue'; // 导入专项分析报告视图
 import AiDiagramView from '@/features/diagrams/views/AiDiagramView.vue'; // 导入 AI 图表视图
+import AutomationScriptManagementView from '@/views/AutomationScriptManagementView.vue'; // 导入自动化用例管理视图
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -77,6 +78,11 @@ const routes: Array<RouteRecordRaw> = [
         path: 'test-executions',
         name: 'TestExecutionHistory',
         component: TestExecutionHistoryView,
+      },
+      {
+        path: 'automation-scripts',
+        name: 'AutomationScriptManagement',
+        component: AutomationScriptManagementView,
       },
       {
         path: 'llm-configs', // LLM 配置管理

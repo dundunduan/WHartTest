@@ -17,6 +17,11 @@ export interface ChatRequest {
 
   // 多模态相关参数
   image?: string; // 图片base64编码（不含前缀），可选
+  
+  // Playwright 脚本生成参数
+  generate_playwright_script?: boolean; // 是否在任务完成后自动生成 Playwright 脚本
+  test_case_id?: number; // 关联的测试用例ID，生成脚本时必需
+  use_pytest?: boolean; // 生成 pytest 格式还是简单格式，默认 true
 }
 
 /**

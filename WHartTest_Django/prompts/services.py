@@ -322,7 +322,7 @@ $steps
 3. 严格按照上述测试步骤顺序执行每个操作
 4. 每个步骤执行后验证预期结果
 5. 如遇到错误，记录具体错误信息但继续执行后续步骤
-6. 在关键步骤使用 browser_take_screenshot 工具截图，截图完成后必须调用 save_operation_screenshots_to_the_application_case 工具将截图上传到当前测试用例（project_id使用上述项目ID，case_id使用上述用例ID）
+6. 在每个步骤都需要使用 browser_take_screenshot 工具截图，截图完成后必须调用 save_operation_screenshots_to_the_application_case 工具将截图上传到当前测试用例（project_id使用上述项目ID，case_id使用上述用例ID）
 
 ## 输出格式
 执行完成后，请输出以下JSON格式的测试结果：
