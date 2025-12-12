@@ -76,11 +76,37 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     curl \
+    # Playwright 所需的系统依赖
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    # 中文字体支持（解决截图乱码问题）
+    fonts-noto-cjk \
+    fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && fc-cache -fv
 
 # 从构建阶段复制虚拟环境（不包含构建工具）
 COPY --from=builder /opt/venv /opt/venv
+
+# 安装 Playwright 浏览器（Chromium）
+RUN /opt/venv/bin/playwright install chromium
 
 # 从构建阶段复制预下载的 BM25 模型缓存
 COPY --from=builder /root/.cache/fastembed /root/.cache/fastembed

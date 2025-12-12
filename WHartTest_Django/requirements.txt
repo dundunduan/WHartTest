@@ -245,3 +245,7 @@ httpx==0.28.1
 # Pytest测试框架 - MIT许可证 (用于自动化脚本执行)
 # https://github.com/pytest-dev/pytest/blob/main/LICENSE
 pytest>=8.0.0
+
+# Playwright浏览器自动化 - Apache 2.0许可证
+# https://github.com/microsoft/playwright-python/blob/main/LICENSE
+playwright>=1.40.0

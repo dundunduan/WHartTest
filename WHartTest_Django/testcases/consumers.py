@@ -187,36 +187,65 @@ class ExecutionPreviewConsumer(AsyncWebsocketConsumer):
                 if not line:
                     continue
                 
+                # 解析 JSON 消息
                 try:
                     message = json.loads(line)
-                    # 统计帧数
-                    if message.get('type') == 'frame':
-                        frame_count += 1
-                    # 直接转发消息到 WebSocket
-                    await self.send(text_data=json.dumps(message))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.warning(f'JSON解析失败: {e}')
                     # 非 JSON 输出作为日志转发
-                    await self.send(text_data=json.dumps({
-                        'type': 'log',
-                        'message': line
-                    }))
+                    message = {'type': 'log', 'message': line}
+                
+                msg_type = message.get('type', 'unknown')
+                
+                # 处理 frame_file 类型：从文件读取数据并转换为 frame 消息
+                if msg_type == 'frame_file':
+                    frame_path = message.get('path', '')
+                    try:
+                        with open(frame_path, 'r', encoding='utf-8') as f:
+                            frame_data = f.read()
+                        os.remove(frame_path)
+                        message = {'type': 'frame', 'data': frame_data}
+                        msg_type = 'frame'
+                    except Exception as e:
+                        logger.warning(f'读取 frame 文件失败: {e}')
+                        continue
+                
+                if msg_type == 'frame':
+                    frame_count += 1
+                
+                await self.send(text_data=json.dumps(message))
             
             # 读取剩余输出
             remaining = self.process.stdout.read()
             if remaining:
                 for line in remaining.strip().split('\n'):
-                    if line:
+                    if not line:
+                        continue
+                    
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError:
+                        message = {'type': 'log', 'message': line}
+                    
+                    msg_type = message.get('type', 'unknown')
+                    
+                    # 处理 frame_file 类型
+                    if msg_type == 'frame_file':
+                        frame_path = message.get('path', '')
                         try:
-                            message = json.loads(line)
-                            if message.get('type') == 'frame':
-                                frame_count += 1
-                            await self.send(text_data=json.dumps(message))
-                        except json.JSONDecodeError:
-                            # 非 JSON 输出作为日志转发
-                            await self.send(text_data=json.dumps({
-                                'type': 'log',
-                                'message': line
-                            }))
+                            with open(frame_path, 'r', encoding='utf-8') as f:
+                                frame_data = f.read()
+                            os.remove(frame_path)
+                            message = {'type': 'frame', 'data': frame_data}
+                            msg_type = 'frame'
+                        except Exception as e:
+                            logger.warning(f'读取 frame 文件失败: {e}')
+                            continue
+                    
+                    if msg_type == 'frame':
+                        frame_count += 1
+                    
+                    await self.send(text_data=json.dumps(message))
             
             logger.info(f'共转发 {frame_count} 帧')
                     

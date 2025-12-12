@@ -10,28 +10,55 @@ Playwright 执行器 - 独立进程版本
 
 import base64
 import json
+import os
 import sys
+import tempfile
 import time
 import builtins
+import threading
 from contextlib import contextmanager
 
 # 保存原始的 print 函数（必须在任何修改之前）
 _original_print = builtins.print
 
+# 线程锁，保护 stdout 输出，防止多个消息交错
+_output_lock = threading.Lock()
+
+# 获取 stdout 的文件描述符
+_stdout_fd = sys.stdout.fileno()
+
+# Frame 文件目录
+_frame_dir = tempfile.mkdtemp(prefix='playwright_frames_')
+
 
 def send_message(msg_type: str, data: dict):
-    """发送消息到标准输出 - 使用原始 print 避免递归"""
-    message = json.dumps({'type': msg_type, **data})
-    _original_print(message, flush=True)
+    """发送消息到标准输出"""
+    # 对于 frame 类型，将大数据写入文件，只传递文件路径
+    if msg_type == 'frame' and 'data' in data:
+        frame_data = data['data']
+        # 创建临时文件保存 frame 数据
+        frame_file = os.path.join(_frame_dir, f'frame_{time.time()}.b64')
+        with open(frame_file, 'w', encoding='utf-8') as f:
+            f.write(frame_data)
+        # 发送文件路径而非数据
+        message = json.dumps({'type': 'frame_file', 'path': frame_file}) + '\n'
+    else:
+        message = json.dumps({'type': msg_type, **data}) + '\n'
+    
+    message_bytes = message.encode('utf-8')
+    with _output_lock:
+        os.write(_stdout_fd, message_bytes)
 
 
 def patched_print(*args, **kwargs):
     """补丁版本的 print，将输出转换为 JSON 日志消息"""
     # 生成打印内容
     output = ' '.join(str(arg) for arg in args)
-    # 使用原始 print 输出 JSON 消息
-    message = json.dumps({'type': 'log', 'message': output})
-    _original_print(message, flush=True)
+    message = json.dumps({'type': 'log', 'message': output}) + '\n'
+    message_bytes = message.encode('utf-8')
+    with _output_lock:
+        # 使用 os.write 直接写入 fd
+        os.write(_stdout_fd, message_bytes)
 
 
 def create_screenshot_page_wrapper(real_page, interval=0.1):

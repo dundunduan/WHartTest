@@ -155,9 +155,12 @@
           :data="currentScript.executions || []"
           :loading="executionsLoading"
           size="small"
+          row-key="id"
+          v-model:expanded-keys="executionExpandedKeys"
           :expandable="{ width: 50 }"
         >
           <template #columns>
+            <a-table-column title="ID" data-index="id" :width="60" />
             <a-table-column title="状态" data-index="status" :width="80">
               <template #cell="{ record }">
                 <a-tag :color="getExecutionStatusColor(record.status)">
@@ -508,6 +511,7 @@ const executingId = ref<number | null>(null);
 const detailVisible = ref(false);
 const currentScript = ref<AutomationScript | null>(null);
 const executionsLoading = ref(false);
+const executionExpandedKeys = ref<number[]>([]);
 
 // 编辑弹窗
 const editModalVisible = ref(false);
@@ -708,7 +712,11 @@ const startLivePreview = async () => {
       try {
         const data = JSON.parse(event.data);
         
+        // 调试日志：打印接收到的消息类型
+        console.log('[DEBUG WS] 收到消息, type:', data.type, ', 原始数据长度:', event.data.length);
+        
         if (data.type === 'frame') {
+          console.log('[DEBUG WS] 处理 frame 消息, 数据长度:', data.data?.length || 0);
           // 更新当前帧并保存到历史（限制最多100帧，避免内存溢出）
           currentFrame.value = data.data;
           frameHistory.value.push(data.data);
@@ -717,6 +725,7 @@ const startLivePreview = async () => {
           }
           currentFrameIndex.value = frameHistory.value.length - 1;
         } else if (data.type === 'status') {
+          console.log('[DEBUG WS] 处理 status 消息:', data.status, data.message);
           // 更新状态
           if (data.status === 'completed') {
             previewStatus.value = 'completed';
@@ -727,7 +736,12 @@ const startLivePreview = async () => {
           }
           executionLogs.value.push(`[${data.status}] ${data.message}`);
         } else if (data.type === 'log') {
+          console.log('[DEBUG WS] 处理 log 消息:', data.message?.substring(0, 100));
           executionLogs.value.push(data.message);
+        } else {
+          console.warn('[DEBUG WS] 未知消息类型:', data.type, ', 完整数据:', JSON.stringify(data).substring(0, 200));
+          // 未知类型也添加到日志以便调试
+          executionLogs.value.push(`[未知类型 ${data.type}] ${JSON.stringify(data).substring(0, 100)}`);
         }
         
         // 限制日志数量
@@ -735,7 +749,7 @@ const startLivePreview = async () => {
           executionLogs.value = executionLogs.value.slice(-100);
         }
       } catch (e) {
-        console.error('解析 WebSocket 消息失败:', e);
+        console.error('解析 WebSocket 消息失败:', e, ', 原始数据:', event.data?.substring(0, 200));
       }
     };
     
@@ -846,6 +860,7 @@ const handlePageChange = (page: number) => {
 const showDetail = async (script: AutomationScript) => {
   currentScript.value = script;
   detailVisible.value = true;
+  executionExpandedKeys.value = [];
   
   // 加载完整脚本信息和执行历史
   executionsLoading.value = true;

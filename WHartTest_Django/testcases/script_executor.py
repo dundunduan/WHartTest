@@ -316,11 +316,63 @@ class ScriptExecutor:
             shutil.rmtree(self.work_dir, ignore_errors=True)
 
 
+def _cleanup_old_executions(script, max_executions: int = 15):
+    """
+    清理旧的执行记录，只保留最新的 max_executions 条
+    同时删除关联的截图和视频文件
+    
+    Args:
+        script: AutomationScript 实例
+        max_executions: 最多保留的执行记录数
+    """
+    from .models import ScriptExecution
+    
+    # 获取该脚本所有执行记录，按创建时间降序排列
+    all_executions = ScriptExecution.objects.filter(
+        script=script
+    ).order_by('-created_at')
+    
+    total_count = all_executions.count()
+    if total_count <= max_executions:
+        return
+    
+    # 获取需要删除的旧记录
+    executions_to_delete = all_executions[max_executions:]
+    
+    for execution in executions_to_delete:
+        execution_id = execution.id  # 在删除前保存 ID
+        try:
+            # 删除关联的截图文件（screenshots 是 JSONField，存储路径列表）
+            if execution.screenshots:
+                for screenshot_path in execution.screenshots:
+                    image_path = Path(settings.MEDIA_ROOT) / screenshot_path
+                    if image_path.exists():
+                        image_path.unlink()
+                        logger.debug(f"已删除截图文件: {image_path}")
+            
+            # 删除关联的视频文件（videos 是 JSONField，存储路径列表）
+            if execution.videos:
+                for video_path in execution.videos:
+                    full_video_path = Path(settings.MEDIA_ROOT) / video_path
+                    if full_video_path.exists():
+                        full_video_path.unlink()
+                        logger.debug(f"已删除视频文件: {full_video_path}")
+            
+            # 删除执行记录
+            execution.delete()
+            logger.info(f"已清理旧执行记录: ID={execution_id}")
+        except Exception as e:
+            logger.warning(f"清理执行记录 ID={execution_id} 时出错: {e}")
+    
+    logger.info(f"脚本 ID={script.id} 清理了 {total_count - max_executions} 条旧执行记录")
+
+
 def execute_automation_script(
     script,
     executor=None,
     headless: bool = None,
-    record_video: bool = False
+    record_video: bool = False,
+    max_executions: int = 15
 ) -> 'ScriptExecution':
     """
     执行 AutomationScript 并创建 ScriptExecution 记录
@@ -330,6 +382,7 @@ def execute_automation_script(
         executor: 执行人（User 实例）
         headless: 是否无头模式，默认使用脚本配置
         record_video: 是否录制视频
+        max_executions: 每个脚本最多保留的执行记录数，默认 15
     
     Returns:
         创建的 ScriptExecution 实例
@@ -349,7 +402,11 @@ def execute_automation_script(
         browser_type='chromium'
     )
     
+    # 清理旧的执行记录，只保留最新的 max_executions 条
+    _cleanup_old_executions(script, max_executions)
+    
     logger.info(f"[execute_automation_script] 开始执行脚本 ID={script.id}, 名称={script.name}")
+
     logger.info(f"[execute_automation_script] 脚本类型={script.script_type}, 来源={script.source}, record_video={record_video}")
     logger.info(f"[execute_automation_script] 创建执行记录 ID={execution.id}")
     
