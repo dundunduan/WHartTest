@@ -713,6 +713,7 @@ class TestExecutionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         
         suite_id = serializer.validated_data['suite_id']
+        generate_playwright_script = serializer.validated_data.get('generate_playwright_script', False)
         suite = get_object_or_404(TestSuite, id=suite_id)
         
         # 验证套件属于当前项目
@@ -726,7 +727,8 @@ class TestExecutionViewSet(viewsets.ModelViewSet):
         execution = TestExecution.objects.create(
             suite=suite,
             executor=request.user,
-            status='pending'
+            status='pending',
+            generate_playwright_script=generate_playwright_script
         )
         
         # 使用transaction.on_commit()确保数据库事务提交后再启动Celery任务

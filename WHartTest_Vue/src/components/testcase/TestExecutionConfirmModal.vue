@@ -29,6 +29,17 @@
         <a-descriptions-item label="预计耗时">
           <a-tag color="orange">约 {{ estimatedTime }} 分钟</a-tag>
         </a-descriptions-item>
+        <a-descriptions-item label="生成脚本">
+          <a-space>
+            <a-switch v-model="generateScript" :disabled="!hasTestCases" />
+            <span v-if="hasTestCases" style="color: #86909c; font-size: 12px;">
+              执行功能用例时自动生成 Playwright 脚本
+            </span>
+            <span v-else style="color: #c9cdd4; font-size: 12px;">
+              该套件无功能用例，仅执行脚本
+            </span>
+          </a-space>
+        </a-descriptions-item>
       </a-descriptions>
 
       <a-alert type="warning" style="margin-top: 16px;">
@@ -74,6 +85,12 @@ const modalVisible = computed({
 });
 
 const loading = ref(false);
+const generateScript = ref(false);
+
+// 是否有功能测试用例
+const hasTestCases = computed(() => {
+  return (props.suite?.testcase_count || 0) > 0;
+});
 
 // 预估执行时间 (每个用例/脚本约30秒)
 const estimatedTime = computed(() => {
@@ -94,6 +111,7 @@ const handleConfirm = async () => {
   try {
     const response = await createTestExecution(props.currentProjectId, {
       suite_id: props.suite.id,
+      generate_playwright_script: generateScript.value,
     });
 
     if (response.success && response.data) {
@@ -116,6 +134,7 @@ const handleConfirm = async () => {
 
 // 取消
 const handleCancel = () => {
+  generateScript.value = false;
   emit('update:visible', false);
 };
 </script>

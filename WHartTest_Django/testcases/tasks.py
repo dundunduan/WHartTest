@@ -508,7 +508,14 @@ async def _execute_testcase_via_chat_api(result: TestCaseResult):
     testcase = await sync_to_async(lambda: result.testcase, thread_sensitive=False)()
     executor = await sync_to_async(lambda: execution.executor, thread_sensitive=False)()
     project = await sync_to_async(lambda: testcase.project, thread_sensitive=False)()
-    
+    # 获取是否生成脚本的配置
+    generate_playwright_script = await sync_to_async(
+        lambda: execution.generate_playwright_script, thread_sensitive=False
+    )()
+
+    # 调试日志：打印脚本生成配置
+    logger.info(f"测试执行 ID: {execution.id}, 生成脚本配置: {generate_playwright_script}")
+
     if not executor or not project:
         raise Exception("无法获取执行人或项目信息")
     
@@ -523,6 +530,8 @@ async def _execute_testcase_via_chat_api(result: TestCaseResult):
         
         logger.info(f"使用测试执行提示词: {prompt.name}")
         execution_log.append(f"✓ 加载测试执行提示词: {prompt.name}")
+        if generate_playwright_script:
+            execution_log.append("✓ 已启用脚本生成模式")
         
         # 2. 获取测试步骤
         steps = await _get_testcase_steps(testcase)
@@ -559,7 +568,9 @@ async def _execute_testcase_via_chat_api(result: TestCaseResult):
             "session_id": session_id,
             "project_id": str(project.id),
             "prompt_id": str(prompt.id),
-            "use_knowledge_base": False
+            "use_knowledge_base": False,
+            "generate_playwright_script": generate_playwright_script,
+            "test_case_id": testcase.id
         }
         
         logger.info(f"调用 Agent Loop API: {api_url}")

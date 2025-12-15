@@ -83,6 +83,7 @@ export interface TestExecution {
 // 创建测试执行请求参数
 export interface CreateTestExecutionRequest {
   suite_id: number;
+  generate_playwright_script?: boolean;
 }
 
 // 测试执行列表响应接口

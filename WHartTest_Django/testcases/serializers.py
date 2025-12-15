@@ -515,7 +515,8 @@ class TestExecutionSerializer(serializers.ModelSerializer):
             'id', 'suite', 'suite_detail', 'status', 'executor', 'executor_detail',
             'started_at', 'completed_at', 'total_count', 'passed_count',
             'failed_count', 'skipped_count', 'error_count', 'celery_task_id',
-            'duration', 'pass_rate', 'results', 'script_results', 'created_at', 'updated_at'
+            'duration', 'pass_rate', 'results', 'script_results',
+            'generate_playwright_script', 'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'status', 'started_at', 'completed_at',
@@ -530,7 +531,12 @@ class TestExecutionCreateSerializer(serializers.Serializer):
     创建测试执行的简化序列化器
     """
     suite_id = serializers.IntegerField(required=True, help_text="测试套件ID")
-    
+    generate_playwright_script = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="是否为功能测试用例生成Playwright脚本"
+    )
+
     def validate_suite_id(self, value):
         """验证套件是否存在"""
         try:

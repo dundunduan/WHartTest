@@ -321,7 +321,14 @@ class TestExecution(models.Model):
     
     # Celery任务ID,用于追踪和取消任务
     celery_task_id = models.CharField(_('任务ID'), max_length=255, blank=True, null=True)
-    
+
+    # 是否为功能测试用例生成Playwright脚本
+    generate_playwright_script = models.BooleanField(
+        _('生成脚本'),
+        default=False,
+        help_text=_('执行功能测试用例时是否自动生成Playwright脚本')
+    )
+
     created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
     updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
     

@@ -567,6 +567,19 @@ class AgentLoopStreamAPIView(View):
             if generate_playwright_script:
                 script_instruction = """
 
+## 【强制要求】自动化脚本生成
+
+**重要：本次任务必须在执行完所有测试步骤后，生成并保存 Playwright 脚本！这是强制要求，不可跳过！**
+
+### 任务流程（必须按顺序完成）
+1. ✅ 执行所有测试步骤（使用 Playwright MCP 工具）
+2. ✅ 为每个步骤截图并上传
+3. ⚠️ **【必须】生成 Playwright Python 脚本**（根据执行过程）
+4. ⚠️ **【必须】调用 `save_playwright_script` 保存脚本**
+5. ✅ 返回测试结果 JSON
+
+**如果没有调用 `save_playwright_script` 保存脚本，本次任务视为未完成！**
+
 ## 自动化脚本管理工具
 
 你可以使用以下工具管理自动化脚本：
@@ -750,6 +763,7 @@ page.get_by_placeholder("用户名").fill("admin")
 ```
 """
                 effective_prompt = (effective_prompt or '') + script_instruction
+                logger.info(f"AgentLoopStreamAPI: 已追加脚本生成指令，系统提示词长度: {len(effective_prompt)} 字符")
 
             # 7.5 加载历史对话摘要（跨对话上下文，根据模型context_limit判断是否需要AI摘要）
             conversation_summary = await self._load_conversation_summary(

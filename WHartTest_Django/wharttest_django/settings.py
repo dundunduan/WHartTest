@@ -162,11 +162,13 @@ if DATABASE_TYPE == 'postgres':
             'NAME': os.environ.get('POSTGRES_DB', 'wharttest'),
             'USER': os.environ.get('POSTGRES_USER', 'postgres'),
             'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'postgres'),
-            'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+            'HOST': os.environ.get('POSTGRES_HOST', '127.0.0.1'),
             'PORT': os.environ.get('POSTGRES_PORT', '8919'),
             'OPTIONS': {
-                'connect_timeout': 10,
+                'connect_timeout': 5,
             },
+            'CONN_MAX_AGE': 600,  # 连接保持 600 秒（10分钟），避免每次请求重新建立连接
+            'CONN_HEALTH_CHECKS': True,  # Django 4.1+ 连接健康检查
         }
     }
 else:
