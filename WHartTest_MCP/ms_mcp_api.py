@@ -17,7 +17,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 mcp = FastMCP(
-    name="testcase_tools"
+    name="ms_tools"
 )
 
 def aes_encrypt(text: str, secret_key: str, iv: str) -> str:

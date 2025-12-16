@@ -42,15 +42,6 @@ docker-compose up -d bge-m3-init
 
 <img src="./img_5.png" alt="contact" width="1000">
 
-2.配置知识库
-
-<img src="./img_25.png" alt="contact" width="1000">
-<img src="./img_27.png" alt="contact" width="1000">
-
-3.测试连通性
-
-<img src="./img_13.png" alt="contact" width="1000">
-
 ## 四、MCP配置示例
 ### 前置：前往key管理生成key
 - 平台内置了key，如果不考虑安全问题使用即可
