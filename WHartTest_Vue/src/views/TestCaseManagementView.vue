@@ -337,11 +337,12 @@ const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) =>
   const message = `
 执行ID为 ${testCase.id} 的测试用例。
 你是一名UI自动化测试人员，需要按照用户的指令执行和验证用例。
-请调用MCP工具完成以下任务：
+请调用工具完成以下任务：
 1. 读取该测试用例所属项目（ID：${currentProjectId.value}）及模块，定位完整的测试用例定义。
-2. 调用工具逐步执行测试用例，并验证每一步的断言。
-3. 每一步执行后截图，并将截图立马上传用例，禁止执行完，再重新执行上传。
-4. 执行结束后告知用户本次测试是否通过，并总结关键截图链接。
+2. 调用工具执行测试用例，并验证相应的断言。
+3. 每一步执行后截图，可以单张上传，也可以批量上传。
+4. 必须上传截图以供查看。
+5. 执行结束后告知用户本次测试是否通过，并总结关键截图链接。
 
 附加信息：
 - 测试用例名称：${testCase.name}
@@ -356,7 +357,7 @@ const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) =>
     use_knowledge_base: false,
     // Playwright 脚本生成参数
     generate_playwright_script: options.generatePlaywrightScript,
-    test_case_id: options.generatePlaywrightScript ? testCase.id : undefined,
+    test_case_id: testCase.id,  // 始终传递，用于截图目录隔离
   };
 
   const notificationContent = options.generatePlaywrightScript

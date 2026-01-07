@@ -208,20 +208,90 @@ async def _format_project_credentials(project):
         return ""
 
 
+async def _format_project_skills(project):
+    """
+    格式化全局 Skills 信息为文本（渐进式加载）
+
+    只注入 Skill 的名称和描述（元数据），完整的 SKILL.md 内容需要通过
+    read_skill_content 工具按需获取。Skills 全局共享，不限制项目。
+
+    Args:
+        project: 项目对象（保留参数兼容性，但不用于过滤）
+
+    Returns:
+        str: 格式化后的 Skills 元数据文本
+    """
+    try:
+        from skills.models import Skill
+
+        # Skills 全局共享，不限制项目
+        skills = await sync_to_async(list)(
+            Skill.objects.filter(is_active=True).all()
+        )
+
+        if not skills:
+            return ""
+
+        skills_text = "\n\n# Available Skills\n\n"
+        skills_text += "以下是可用的 Skills 列表。需要使用某个 Skill 时，先调用 `read_skill_content` 工具获取完整的使用说明，再调用 `execute_skill_script` 执行命令。\n\n"
+        for skill in skills:
+            skills_text += f"- **{skill.name}**: {skill.description}\n"
+
+        return skills_text
+
+    except Exception as e:
+        logger.error(f"Format project skills error: {e}")
+        return ""
+
+
+async def _inject_project_context(prompt_content: str, project) -> str:
+    """
+    注入项目上下文（凭据和 Skills）到提示词中
+
+    Args:
+        prompt_content: 原始提示词内容
+        project: 项目对象
+
+    Returns:
+        str: 注入上下文后的提示词
+    """
+    if not project:
+        return prompt_content
+
+    # 注入凭据信息
+    if '{credentials_info}' in prompt_content:
+        credentials_text = await _format_project_credentials(project)
+        prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+
+    # 注入 Skills 信息
+    if '{skills_info}' in prompt_content:
+        skills_text = await _format_project_skills(project)
+        prompt_content = prompt_content.replace('{skills_info}', skills_text)
+    else:
+        # 即使没有占位符，也自动追加 Skills 到提示词末尾
+        skills_text = await _format_project_skills(project)
+        if skills_text:
+            prompt_content = prompt_content + skills_text
+
+    return prompt_content
+
+
 async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
     """
     获取有效的系统提示词（异步版本）
     优先级：用户指定的提示词 > 用户默认提示词 > 全局LLM配置的system_prompt
-    如果提示词中包含{credentials_info}占位符，且提供了project参数，将自动注入项目凭据信息
+    支持占位符: {credentials_info} 注入项目凭据, {skills_info} 注入项目 Skills 元数据
+    如果未使用 {skills_info} 占位符，活跃的 Skills 元数据将自动追加到提示词末尾
+    （完整的 SKILL.md 内容通过 read_skill_content 工具按需获取）
 
     Args:
         user: 当前用户
         prompt_id: 指定的提示词ID（可选）
-        project: 项目对象（可选），用于注入凭据信息
+        project: 项目对象（可选），用于注入凭据和 Skills 信息
 
     Returns:
         tuple: (prompt_content, prompt_source)
-        prompt_content: 提示词内容（已注入凭据信息）
+        prompt_content: 提示词内容（已注入项目上下文）
         prompt_source: 提示词来源 ('user_specified', 'user_default', 'global', 'none')
     """
     try:
@@ -233,11 +303,7 @@ async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
                     user=user,
                     is_active=True
                 )
-                prompt_content = user_prompt.content
-                # 注入凭据信息
-                if project and '{credentials_info}' in prompt_content:
-                    credentials_text = await _format_project_credentials(project)
-                    prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+                prompt_content = await _inject_project_context(user_prompt.content, project)
                 return prompt_content, 'user_specified'
             except UserPrompt.DoesNotExist:
                 logger.warning(f"Specified prompt {prompt_id} not found for user {user.id}")
@@ -250,11 +316,7 @@ async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
                 is_active=True
             )
             if default_prompt:
-                prompt_content = default_prompt.content
-                # 注入凭据信息
-                if project and '{credentials_info}' in prompt_content:
-                    credentials_text = await _format_project_credentials(project)
-                    prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+                prompt_content = await _inject_project_context(default_prompt.content, project)
                 return prompt_content, 'user_default'
         except UserPrompt.DoesNotExist:
             pass
@@ -263,11 +325,7 @@ async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
         try:
             active_config = await sync_to_async(LLMConfig.objects.get)(is_active=True)
             if active_config.system_prompt and active_config.system_prompt.strip():
-                prompt_content = active_config.system_prompt.strip()
-                # 注入凭据信息
-                if project and '{credentials_info}' in prompt_content:
-                    credentials_text = await _format_project_credentials(project)
-                    prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+                prompt_content = await _inject_project_context(active_config.system_prompt.strip(), project)
                 return prompt_content, 'global'
         except LLMConfig.DoesNotExist:
             logger.warning("No active LLM configuration found")

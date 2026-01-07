@@ -371,7 +371,7 @@ class AgentOrchestrator:
                             logger.error(f"LLM 响应包含错误元数据: {metadata}")
 
                 return response
-            except (httpx.ConnectError, openai.APIConnectionError) as e:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, openai.APIConnectionError) as e:
                 last_error = e
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2  # 递增等待：2秒、4秒、6秒
@@ -616,7 +616,7 @@ class AgentOrchestrator:
                 
                 return response
                 
-            except (httpx.ConnectError, openai.APIConnectionError) as e:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, openai.APIConnectionError) as e:
                 last_error = e
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2

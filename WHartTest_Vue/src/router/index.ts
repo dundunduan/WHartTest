@@ -21,6 +21,7 @@ import DocumentDetailView from '@/features/requirements/views/DocumentDetailView
 import SpecializedReportView from '@/features/requirements/views/SpecializedReportView.vue'; // 导入专项分析报告视图
 import AiDiagramView from '@/features/diagrams/views/AiDiagramView.vue'; // 导入 AI 图表视图
 import AutomationScriptManagementView from '@/views/AutomationScriptManagementView.vue'; // 导入自动化用例管理视图
+import SkillsManagementView from '@/features/skills/views/SkillsManagementView.vue'; // 导入 Skills 管理视图
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -128,6 +129,11 @@ const routes: Array<RouteRecordRaw> = [
         path: 'ai-diagram', // AI 图表生成
         name: 'AiDiagram',
         component: AiDiagramView,
+      },
+      {
+        path: 'skills', // Skills 管理
+        name: 'SkillsManagement',
+        component: SkillsManagementView,
       },
       // 其他受保护的子路由可以加在这里
     ]

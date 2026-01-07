@@ -149,6 +149,10 @@
               <template #icon><icon-cloud /></template>
               <a href="#" @click="checkProjectAndNavigate($event, '/remote-mcp-configs')">MCP配置</a>
             </a-menu-item>
+            <a-menu-item key="skills" v-if="hasMcpConfigsPermission">
+              <template #icon><icon-apps /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/skills')">Skills管理</a>
+            </a-menu-item>
           </a-sub-menu>
         </a-menu>
         <!-- 侧边栏底部收起/展开按钮 -->

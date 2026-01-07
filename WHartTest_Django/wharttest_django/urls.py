@@ -30,6 +30,7 @@ from testcases.views import (
     TestSuiteViewSet, TestExecutionViewSet,
     AutomationScriptViewSet, ScriptExecutionViewSet
 )  # 导入 TestCase、TestCaseModule、TestSuite、TestExecution 和自动化用例视图集
+from skills.views import SkillViewSet  # 导入 Skill 视图集
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 
 router = DefaultRouter()
@@ -42,6 +43,7 @@ projects_router.register(r'testcases', TestCaseViewSet, basename='project-testca
 projects_router.register(r'testcase-modules', TestCaseModuleViewSet, basename='project-testcase-modules')
 projects_router.register(r'test-suites', TestSuiteViewSet, basename='project-test-suites')
 projects_router.register(r'test-executions', TestExecutionViewSet, basename='project-test-executions')
+projects_router.register(r'skills', SkillViewSet, basename='project-skills')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

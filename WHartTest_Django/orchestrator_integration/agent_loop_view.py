@@ -520,11 +520,12 @@ class AgentLoopStreamAPIView(View):
 
             # 5.5. 添加内置工具（Playwright 脚本管理等）
             from orchestrator_integration.builtin_tools import get_builtin_tools
-            
+
             builtin_tools = get_builtin_tools(
                 user_id=request.user.id,
                 project_id=int(project_id),
                 test_case_id=test_case_id,
+                chat_session_id=session_id,
             )
             mcp_tools_list.extend(builtin_tools)
             logger.info(f"AgentLoopStreamAPI: Added {len(builtin_tools)} builtin tools")
@@ -1370,6 +1371,15 @@ page.get_by_placeholder("用户名").fill("admin")
         generate_playwright_script = body_data.get('generate_playwright_script', False)
         test_case_id = body_data.get('test_case_id')  # 用于关联生成的脚本
         use_pytest = body_data.get('use_pytest', True)  # 生成 pytest 格式还是简单格式
+
+        # 兜底：如果前端没传 test_case_id，尝试从消息中解析
+        if not test_case_id and user_message:
+            import re
+            # 匹配 "执行ID为 11 的测试用例" 或 "测试用例 ID：11" 等模式
+            match = re.search(r'(?:执行\s*ID\s*为|测试用例\s*(?:ID|id)[：:]\s*|case[_-]?id[：:=]\s*)(\d+)', user_message)
+            if match:
+                test_case_id = int(match.group(1))
+                logger.info(f"AgentLoopStreamAPI: Parsed test_case_id from message: {test_case_id}")
 
         # 3. 参数验证
         if not project_id:
