@@ -107,7 +107,7 @@ export interface BatchModuleOperationRequest {
 }
 
 // 拆分级别类型
-export type SplitLevel = 'h1' | 'h2' | 'h3' | 'auto';
+export type SplitLevel = 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'auto';
 
 // 模块拆分请求
 export interface SplitModulesRequest {
@@ -163,6 +163,9 @@ export interface DocumentStructure {
   h1_titles: string[];
   h2_titles: string[];
   h3_titles: string[];
+  h4_titles: string[];
+  h5_titles: string[];
+  h6_titles: string[];
 }
 
 // 拆分建议

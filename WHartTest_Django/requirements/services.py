@@ -409,7 +409,7 @@ class DocumentProcessor:
             return ""
 
     def _extract_from_doc(self, file) -> str:
-        """提取旧版Word(.doc)文件内容"""
+        """提取旧版Word(.doc)文件内容，优先转换为docx以保留标题样式"""
         import tempfile
         import os
         import platform
@@ -436,15 +436,43 @@ class DocumentProcessor:
         try:
             content = None
 
-            # Windows: 使用 COM 接口
+            # 方法1 (推荐): LibreOffice 转换为 docx，保留标题样式
+            try:
+                import tempfile as tf
+                with tf.TemporaryDirectory() as tmp_dir:
+                    result = subprocess.run(
+                        ['libreoffice', '--headless', '--convert-to', 'docx',
+                         '--outdir', tmp_dir, tmp_path],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    if result.returncode == 0:
+                        docx_file = os.path.join(tmp_dir,
+                            os.path.basename(tmp_path).replace('.doc', '.docx'))
+                        if os.path.exists(docx_file):
+                            # 用 python-docx 解析转换后的 docx，保留标题样式
+                            with open(docx_file, 'rb') as f:
+                                content = self._extract_from_word(f)
+                            if content:
+                                logger.info(f"成功提取.doc文档(LibreOffice->docx)，内容长度: {len(content)}")
+                                return content
+            except FileNotFoundError:
+                logger.debug("LibreOffice 未安装，尝试其他方法")
+            except Exception as e:
+                logger.debug(f"LibreOffice 转换失败: {e}")
+
+            # 方法2: Windows COM 接口（可以保留样式信息）
             if platform.system() == 'Windows':
+                content = self._extract_doc_with_com_styled(tmp_path)
+                if content:
+                    logger.info(f"成功提取.doc文档(COM带样式)，内容长度: {len(content)}")
+                    return content
+                # 降级到纯文本COM
                 content = self._extract_doc_with_com(tmp_path)
                 if content:
-                    logger.info(f"成功提取.doc文档(COM)，内容长度: {len(content)}")
-                    return content
+                    logger.info(f"成功提取.doc文档(COM纯文本)，内容长度: {len(content)}")
+                    return self._infer_headings_from_plain_text(content)
 
-            # Linux/Mac: 依次尝试 antiword -> catdoc -> LibreOffice
-            # 方法1: antiword
+            # 方法3: antiword (纯文本，需要推断标题)
             try:
                 result = subprocess.run(
                     ['antiword', '-w', '0', tmp_path],
@@ -453,7 +481,7 @@ class DocumentProcessor:
                 if result.returncode == 0 and result.stdout.strip():
                     content = result.stdout.strip()
                     logger.info(f"成功提取.doc文档(antiword)，内容长度: {len(content)}")
-                    return content
+                    return self._infer_headings_from_plain_text(content)
                 else:
                     logger.debug(f"antiword 返回码: {result.returncode}, stderr: {result.stderr}")
             except FileNotFoundError:
@@ -461,7 +489,7 @@ class DocumentProcessor:
             except Exception as e:
                 logger.debug(f"antiword 失败: {e}")
 
-            # 方法2: catdoc
+            # 方法4: catdoc (纯文本，需要推断标题)
             try:
                 result = subprocess.run(
                     ['catdoc', '-w', tmp_path],
@@ -470,13 +498,13 @@ class DocumentProcessor:
                 if result.returncode == 0 and result.stdout.strip():
                     content = result.stdout.strip()
                     logger.info(f"成功提取.doc文档(catdoc)，内容长度: {len(content)}")
-                    return content
+                    return self._infer_headings_from_plain_text(content)
             except FileNotFoundError:
                 logger.debug("catdoc 未安装")
             except Exception as e:
                 logger.debug(f"catdoc 失败: {e}")
 
-            # 方法3: LibreOffice
+            # 方法5: LibreOffice 转纯文本 (最后的备选)
             try:
                 import tempfile as tf
                 with tf.TemporaryDirectory() as tmp_dir:
@@ -491,8 +519,8 @@ class DocumentProcessor:
                         if os.path.exists(txt_file):
                             with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
                                 content = f.read().strip()
-                            logger.info(f"成功提取.doc文档(LibreOffice)，内容长度: {len(content)}")
-                            return content
+                            logger.info(f"成功提取.doc文档(LibreOffice->txt)，内容长度: {len(content)}")
+                            return self._infer_headings_from_plain_text(content)
             except FileNotFoundError:
                 logger.debug("LibreOffice 未安装")
             except Exception as e:
@@ -500,8 +528,8 @@ class DocumentProcessor:
 
             # 所有方法都失败
             error_msg = (
-                "无法解析 .doc 文件。请安装以下工具之一：\n"
-                "Ubuntu/Debian: apt-get install antiword\n"
+                "无法解析 .doc 文件。请安装 LibreOffice 以获得最佳效果：\n"
+                "Ubuntu/Debian: apt-get install libreoffice\n"
                 "或者将文件另存为 .docx 格式后重新上传"
             )
             logger.error(error_msg)
@@ -512,6 +540,56 @@ class DocumentProcessor:
                 os.unlink(tmp_path)
             except Exception:
                 pass
+
+    def _extract_doc_with_com_styled(self, file_path: str) -> str:
+        """使用Windows COM接口提取.doc内容，保留标题样式"""
+        try:
+            import win32com.client
+            import pythoncom
+
+            pythoncom.CoInitialize()
+            try:
+                word = win32com.client.Dispatch("Word.Application")
+                word.Visible = False
+                word.DisplayAlerts = False
+                doc = word.Documents.Open(file_path, ReadOnly=True, AddToRecentFiles=False)
+
+                content_parts = []
+                for para in doc.Paragraphs:
+                    text = para.Range.Text.strip()
+                    if not text or text == '\r':
+                        continue
+
+                    # 获取段落样式
+                    style_name = para.Style.NameLocal if para.Style else ""
+
+                    # 根据样式转换为Markdown标题
+                    if '标题 1' in style_name or 'Heading 1' in style_name:
+                        content_parts.append(f"# {text}")
+                    elif '标题 2' in style_name or 'Heading 2' in style_name:
+                        content_parts.append(f"## {text}")
+                    elif '标题 3' in style_name or 'Heading 3' in style_name:
+                        content_parts.append(f"### {text}")
+                    elif '标题 4' in style_name or 'Heading 4' in style_name:
+                        content_parts.append(f"#### {text}")
+                    elif '标题 5' in style_name or 'Heading 5' in style_name:
+                        content_parts.append(f"##### {text}")
+                    elif '标题 6' in style_name or 'Heading 6' in style_name:
+                        content_parts.append(f"###### {text}")
+                    else:
+                        content_parts.append(text)
+
+                doc.Close(False)
+                word.Quit()
+                return '\n\n'.join(content_parts)
+            finally:
+                pythoncom.CoUninitialize()
+        except ImportError:
+            logger.debug("pywin32 未安装")
+            return ""
+        except Exception as e:
+            logger.debug(f"COM带样式解析.doc失败: {e}")
+            return ""
 
     def _extract_doc_with_com(self, file_path: str) -> str:
         """使用Windows COM接口提取.doc内容"""
@@ -537,6 +615,64 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"COM方式解析.doc失败: {e}")
             return ""
+
+    def _infer_headings_from_plain_text(self, content: str) -> str:
+        """从纯文本推断标题结构，转换为Markdown格式"""
+        import re
+
+        lines = content.split('\n')
+        result_lines = []
+
+        # 常见的标题模式
+        # 1. 数字编号: "1. xxx", "1.1 xxx", "1.1.1 xxx" 等
+        # 2. 中文编号: "一、xxx", "（一）xxx", "1）xxx" 等
+        # 3. 章节关键词: "第一章 xxx", "第1节 xxx" 等
+
+        # 编号模式 -> 标题级别映射
+        patterns = [
+            # 第X章 -> H1
+            (r'^第[一二三四五六七八九十\d]+章\s*[:：]?\s*(.+)$', 1),
+            # 第X节 -> H2
+            (r'^第[一二三四五六七八九十\d]+节\s*[:：]?\s*(.+)$', 2),
+            # 一、二、三、 -> H1
+            (r'^[一二三四五六七八九十]+[、.．]\s*(.+)$', 1),
+            # （一）（二）-> H2
+            (r'^[（\(][一二三四五六七八九十]+[）\)]\s*(.+)$', 2),
+            # 1. 2. 3. (独立行，较短) -> H2
+            (r'^(\d+)[.、．]\s*(.{2,50})$', 2),
+            # 1.1 1.2 (两级编号) -> H3
+            (r'^(\d+\.\d+)[.、．\s]\s*(.{2,50})$', 3),
+            # 1.1.1 (三级编号) -> H4
+            (r'^(\d+\.\d+\.\d+)[.、．\s]\s*(.{2,50})$', 4),
+            # 1.1.1.1 (四级编号) -> H5
+            (r'^(\d+\.\d+\.\d+\.\d+)[.、．\s]\s*(.{2,50})$', 5),
+            # 1) 2) 3) -> H3
+            (r'^(\d+)[)）]\s*(.{2,50})$', 3),
+        ]
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                result_lines.append('')
+                continue
+
+            matched = False
+            for pattern, level in patterns:
+                match = re.match(pattern, stripped)
+                if match:
+                    # 检查是否可能是标题（不能太长，前后应有空行等启发式判断）
+                    if len(stripped) <= 80:
+                        prefix = '#' * level + ' '
+                        result_lines.append(prefix + stripped)
+                        matched = True
+                        break
+
+            if not matched:
+                result_lines.append(line)
+
+        result = '\n'.join(result_lines)
+        logger.info(f"标题推断完成，原始长度: {len(content)}, 处理后长度: {len(result)}")
+        return result
 
     def _convert_paragraph_to_markdown(self, paragraph) -> str:
         """将Word段落转换为Markdown格式"""
@@ -768,7 +904,7 @@ class ModuleSplitter:
             # 根据拆分级别选择方法
             if split_level == 'auto':
                 modules_data = self._split_by_character_length(content, chunk_size)
-            elif split_level in ['h1', 'h2', 'h3']:
+            elif split_level in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                 modules_data = self._split_by_heading_level(content, split_level, include_context)
             else:
                 raise ValueError(f"不支持的拆分级别: {split_level}")
@@ -1222,7 +1358,10 @@ class ModuleSplitter:
         heading_patterns = {
             'h1': '# ',
             'h2': '## ',
-            'h3': '### '
+            'h3': '### ',
+            'h4': '#### ',
+            'h5': '##### ',
+            'h6': '###### '
         }
 
         target_pattern = heading_patterns.get(level)
@@ -1237,6 +1376,9 @@ class ModuleSplitter:
 
         current_h1 = ""
         current_h2 = ""
+        current_h3 = ""
+        current_h4 = ""
+        current_h5 = ""
 
         for i, line in enumerate(lines):
             stripped = line.strip()
@@ -1244,8 +1386,24 @@ class ModuleSplitter:
             # 跟踪上级标题
             if stripped.startswith('# ') and not stripped.startswith('## '):
                 current_h1 = stripped
+                current_h2 = ""
+                current_h3 = ""
+                current_h4 = ""
+                current_h5 = ""
             elif stripped.startswith('## ') and not stripped.startswith('### '):
                 current_h2 = stripped
+                current_h3 = ""
+                current_h4 = ""
+                current_h5 = ""
+            elif stripped.startswith('### ') and not stripped.startswith('#### '):
+                current_h3 = stripped
+                current_h4 = ""
+                current_h5 = ""
+            elif stripped.startswith('#### ') and not stripped.startswith('##### '):
+                current_h4 = stripped
+                current_h5 = ""
+            elif stripped.startswith('##### ') and not stripped.startswith('###### '):
+                current_h5 = stripped
 
             # 找到目标级别的标题
             if stripped.startswith(target_pattern) and not stripped.startswith(target_pattern + '#'):
@@ -1256,10 +1414,38 @@ class ModuleSplitter:
                 if include_context:
                     if level == 'h2' and current_h1:
                         context.append(current_h1)
-                    elif level == 'h3' and current_h1:
-                        context.append(current_h1)
+                    elif level == 'h3':
+                        if current_h1:
+                            context.append(current_h1)
                         if current_h2:
                             context.append(current_h2)
+                    elif level == 'h4':
+                        if current_h1:
+                            context.append(current_h1)
+                        if current_h2:
+                            context.append(current_h2)
+                        if current_h3:
+                            context.append(current_h3)
+                    elif level == 'h5':
+                        if current_h1:
+                            context.append(current_h1)
+                        if current_h2:
+                            context.append(current_h2)
+                        if current_h3:
+                            context.append(current_h3)
+                        if current_h4:
+                            context.append(current_h4)
+                    elif level == 'h6':
+                        if current_h1:
+                            context.append(current_h1)
+                        if current_h2:
+                            context.append(current_h2)
+                        if current_h3:
+                            context.append(current_h3)
+                        if current_h4:
+                            context.append(current_h4)
+                        if current_h5:
+                            context.append(current_h5)
 
                 context_headings[i] = context
 

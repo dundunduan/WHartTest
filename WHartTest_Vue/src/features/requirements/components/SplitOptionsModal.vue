@@ -29,6 +29,24 @@
               <div class="radio-desc">按三级标题（### 标题）拆分 - 适合子功能拆分</div>
             </div>
           </a-radio>
+          <a-radio value="h4">
+            <div class="radio-content">
+              <strong>H4级别拆分</strong>
+              <div class="radio-desc">按四级标题（#### 标题）拆分 - 适合细分功能拆分</div>
+            </div>
+          </a-radio>
+          <a-radio value="h5">
+            <div class="radio-content">
+              <strong>H5级别拆分</strong>
+              <div class="radio-desc">按五级标题（##### 标题）拆分 - 适合详细条目拆分</div>
+            </div>
+          </a-radio>
+          <a-radio value="h6">
+            <div class="radio-content">
+              <strong>H6级别拆分</strong>
+              <div class="radio-desc">按六级标题（###### 标题）拆分 - 适合最细粒度拆分</div>
+            </div>
+          </a-radio>
           <a-radio value="auto">
             <div class="radio-content">
               <strong>智能拆分</strong>
@@ -74,6 +92,18 @@
           <div class="structure-item">
             <span class="structure-label">H3标题：</span>
             <span class="structure-count">{{ structureAnalysis.structure_analysis.h3_titles.length }}个</span>
+          </div>
+          <div class="structure-item">
+            <span class="structure-label">H4标题：</span>
+            <span class="structure-count">{{ structureAnalysis.structure_analysis.h4_titles?.length || 0 }}个</span>
+          </div>
+          <div class="structure-item">
+            <span class="structure-label">H5标题：</span>
+            <span class="structure-count">{{ structureAnalysis.structure_analysis.h5_titles?.length || 0 }}个</span>
+          </div>
+          <div class="structure-item">
+            <span class="structure-label">H6标题：</span>
+            <span class="structure-count">{{ structureAnalysis.structure_analysis.h6_titles?.length || 0 }}个</span>
           </div>
         </div>
 
