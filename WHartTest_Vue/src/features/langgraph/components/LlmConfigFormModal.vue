@@ -147,6 +147,7 @@ import {
   type FieldRule,
 } from '@arco-design/web-vue';
 import { IconRefresh, IconThunderbolt } from '@arco-design/web-vue/es/icon';
+import { createLlmConfig, partialUpdateLlmConfig, testLlmConnection } from '@/features/langgraph/services/llmConfigService';
 import axios from 'axios';
 import type { LlmConfig, CreateLlmConfigRequest, PartialUpdateLlmConfigRequest } from '@/features/langgraph/types/llmConfig';
 
@@ -183,6 +184,7 @@ const defaultFormData: CreateLlmConfigRequest = {
   is_active: false,
 };
 const formData = ref<CreateLlmConfigRequest>({ ...defaultFormData });
+const currentConfigId = ref<number | null>(null);
 
 const isEditing = computed(() => !!props.configData?.id);
 
@@ -200,6 +202,7 @@ watch(
   () => props.visible,
   (newVal) => {
     if (newVal) {
+      currentConfigId.value = null;
       if (props.configData && props.configData.id) {
         // 编辑模式：填充表单，但不包括 API Key（除非用户想修改）
         formData.value = {
@@ -316,55 +319,59 @@ const fetchAvailableModels = async () => {
   }
 };
 
-// 测试 LLM 模型真实可用性（OpenAI 兼容格式）
+// 测试 LLM 模型连接（后端发起测试）
 const testLlmModel = async () => {
-  if (!formData.value.api_url) {
-    Message.warning('请先填写 API URL');
-    return;
-  }
-  if (!formData.value.name) {
-    Message.warning('请先填写模型名称');
+  if (!formRef.value) return;
+  const validation = await formRef.value.validate();
+  if (validation) {
+    Message.error('请先完善表单必填项');
     return;
   }
 
   testingModel.value = true;
-
   try {
-    const apiUrl = formData.value.api_url.replace(/\/$/, '');
-    const chatEndpoint = `${apiUrl}/chat/completions`;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (formData.value.api_key) {
-      headers['Authorization'] = `Bearer ${formData.value.api_key}`;
-    }
-    const response = await axios.post(chatEndpoint, {
-      model: formData.value.name,
-      messages: [
-        { role: 'user', content: 'Hi, this is a test message.' }
-      ],
-      max_tokens: 10
-    }, {
-      headers,
-      timeout: 30000,
-    });
+    let configId = props.configData?.id || currentConfigId.value;
 
-    if (response.data && response.data.choices && response.data.choices.length > 0) {
-      const content = response.data.choices[0].message?.content;
-      if (content !== undefined) {
-        Message.success('模型测试成功！服务运行正常');
-      } else {
-        Message.warning('模型响应成功但数据格式异常');
+    // 如果是新建且未保存，先保存
+    if (!configId) {
+      const createResp = await createLlmConfig(formData.value);
+      if (createResp.status !== 'success' || !createResp.data) {
+        Message.error(createResp.message || '保存配置失败');
+        return;
       }
+      configId = createResp.data.id;
+      currentConfigId.value = configId;
+      Message.success('配置已自动保存');
+    } else if (isEditing.value) {
+      // 编辑模式：先保存更改
+      const partialData: PartialUpdateLlmConfigRequest = {
+        config_name: formData.value.config_name,
+        provider: formData.value.provider,
+        name: formData.value.name,
+        api_url: formData.value.api_url,
+        is_active: formData.value.is_active,
+      };
+      if (formData.value.api_key) partialData.api_key = formData.value.api_key;
+      if (formData.value.system_prompt !== undefined) partialData.system_prompt = formData.value.system_prompt;
+      if (formData.value.supports_vision !== undefined) partialData.supports_vision = formData.value.supports_vision;
+      if (formData.value.context_limit !== undefined) partialData.context_limit = formData.value.context_limit;
+      const updateResp = await partialUpdateLlmConfig(configId, partialData);
+      if (updateResp.status !== 'success') {
+        Message.error(updateResp.message || '保存配置失败');
+        return;
+      }
+    }
+
+    // 调用后端测试接口
+    const testResp = await testLlmConnection(configId);
+    if (testResp.status === 'success') {
+      Message.success(testResp.data?.message || '连接测试成功');
     } else {
-      Message.warning('模型响应成功但未返回有效数据');
+      Message.error(testResp.message || '连接测试失败');
     }
   } catch (error: any) {
-    console.error('模型测试失败:', error);
-    const errorMsg = error.response?.data?.error?.message 
-      || error.response?.data?.message
-      || error.response?.statusText 
-      || error.message 
-      || '模型测试失败';
-    Message.error(`模型测试失败: ${errorMsg}`);
+    console.error('测试失败:', error);
+    Message.error('测试失败: ' + (error.message || '未知错误'));
   } finally {
     testingModel.value = false;
   }

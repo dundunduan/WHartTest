@@ -193,6 +193,34 @@ export async function deleteLlmConfig(id: number): Promise<ApiResponse<null>> {
 }
 
 /**
+ * 测试 LLM 配置连接（后端发起测试）
+ */
+export async function testLlmConnection(id: number): Promise<ApiResponse<{ status: string; message: string }>> {
+  const response = await request<{ status: string; message: string }>({
+    url: `${API_BASE_URL}/${id}/test_connection/`,
+    method: 'POST'
+  });
+
+  if (response.success) {
+    return {
+      status: 'success',
+      code: 200,
+      message: response.data?.message || '连接测试成功',
+      data: response.data!,
+      errors: null
+    };
+  } else {
+    return {
+      status: 'error',
+      code: 500,
+      message: response.error || '连接测试失败',
+      data: null,
+      errors: { detail: response.error }
+    };
+  }
+}
+
+/**
  * 获取所有可用的供应商选项
  */
 // getProviders API 已废弃: 前端不再支持多供应商选择，仅保留 openai_compatible。如果需要恢复，可实现该函数并返回 provider 列表。

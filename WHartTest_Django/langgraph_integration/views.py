@@ -114,6 +114,38 @@ class LLMConfigViewSet(BaseModelViewSet):
             LLMConfig.objects.filter(is_active=True).exclude(pk=serializer.instance.pk).update(is_active=False)
         serializer.save()
 
+    @action(detail=True, methods=['post'])
+    def test_connection(self, request, pk=None):
+        """测试LLM配置连接"""
+        import requests as http_requests
+        config = self.get_object()
+        api_url = config.api_url.rstrip('/')
+        headers = {'Content-Type': 'application/json'}
+        if config.api_key:
+            headers['Authorization'] = f'Bearer {config.api_key}'
+        try:
+            resp = http_requests.post(
+                f'{api_url}/chat/completions',
+                json={'model': config.name, 'messages': [{'role': 'user', 'content': 'Hi'}], 'max_tokens': 5},
+                headers=headers,
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get('choices') and len(data['choices']) > 0:
+                return Response({'status': 'success', 'message': '连接测试成功'})
+            return Response({'status': 'warning', 'message': '响应格式异常'}, status=status.HTTP_200_OK)
+        except http_requests.Timeout:
+            return Response({'status': 'error', 'message': '请求超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
+        except http_requests.RequestException as e:
+            msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    msg = e.response.json().get('error', {}).get('message', str(e))
+                except Exception:
+                    msg = e.response.text[:200] if e.response.text else str(e)
+            return Response({'status': 'error', 'message': f'连接失败: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+
 
 def get_effective_system_prompt(user, prompt_id=None):
     """
