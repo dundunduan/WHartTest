@@ -43,7 +43,7 @@ from django.conf import settings
 import logging # Import logging
 from asgiref.sync import sync_to_async # For async operations in sync context
 # 统一的 Checkpointer 工厂
-from wharttest_django.checkpointer import get_async_checkpointer, get_sync_checkpointer, delete_checkpoints_by_thread_id, delete_checkpoints_batch, check_history_exists, get_thread_ids_by_prefix
+from wharttest_django.checkpointer import get_async_checkpointer, get_sync_checkpointer, delete_checkpoints_by_thread_id, delete_checkpoints_batch, check_history_exists, get_thread_ids_by_prefix, rollback_checkpoints_to_count
 import json # For JSON serialization in streaming
 import asyncio # For async operations
 
@@ -1238,6 +1238,80 @@ class ChatHistoryAPIView(APIView):
             return Response({
                 "status": "error", "code": status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "message": f"Database error while deleting chat history: {str(e)}", "data": {},
+                "errors": {"database_error": [str(e)]}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def patch(self, request, *args, **kwargs):
+        """
+        回滚聊天历史到指定消息数量
+        保留前 keep_count 条消息，删除之后的所有消息
+        """
+        session_id = request.query_params.get('session_id')
+        project_id = request.query_params.get('project_id')
+        keep_count = request.data.get('keep_count')
+
+        if not session_id:
+            return Response({
+                "status": "error", "code": status.HTTP_400_BAD_REQUEST,
+                "message": "session_id query parameter is required.", "data": {},
+                "errors": {"session_id": ["This field is required."]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not project_id:
+            return Response({
+                "status": "error", "code": status.HTTP_400_BAD_REQUEST,
+                "message": "project_id query parameter is required.", "data": {},
+                "errors": {"project_id": ["This field is required."]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if keep_count is None or not isinstance(keep_count, int) or keep_count < 0:
+            return Response({
+                "status": "error", "code": status.HTTP_400_BAD_REQUEST,
+                "message": "keep_count must be a non-negative integer.", "data": {},
+                "errors": {"keep_count": ["This field must be a non-negative integer."]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 检查项目权限
+        project = self._check_project_permission(request.user, project_id)
+        if not project:
+            return Response({
+                "status": "error", "code": status.HTTP_403_FORBIDDEN,
+                "message": "You don't have permission to access this project or project doesn't exist.", "data": {},
+                "errors": {"project_id": ["Permission denied or project not found."]}
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        thread_id_parts = [str(request.user.id), str(project_id), str(session_id)]
+        thread_id = "_".join(thread_id_parts)
+
+        if not check_history_exists():
+            return Response({
+                "status": "success",
+                "code": status.HTTP_200_OK,
+                "message": "No chat history found to rollback (history storage does not exist).",
+                "data": {"thread_id": thread_id, "session_id": session_id, "deleted_count": 0}
+            }, status=status.HTTP_200_OK)
+
+        try:
+            deleted_count = rollback_checkpoints_to_count(thread_id, keep_count)
+
+            if deleted_count > 0:
+                message = f"Successfully rolled back chat history for session_id: {session_id}. Kept {keep_count} checkpoints, removed {deleted_count} checkpoints."
+            else:
+                message = f"No checkpoints to remove for session_id: {session_id}. Current count is already at or below {keep_count}."
+
+            logger.info(f"ChatHistoryAPIView PATCH: {message}")
+
+            return Response({
+                "status": "success", "code": status.HTTP_200_OK,
+                "message": message,
+                "data": {"thread_id": thread_id, "session_id": session_id, "deleted_count": deleted_count, "kept_count": keep_count}
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"ChatHistoryAPIView PATCH error: {str(e)}")
+            return Response({
+                "status": "error", "code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "message": f"Database error while rolling back chat history: {str(e)}", "data": {},
                 "errors": {"database_error": [str(e)]}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

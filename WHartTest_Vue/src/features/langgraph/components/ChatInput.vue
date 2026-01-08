@@ -1,5 +1,16 @@
 <template>
   <div class="chat-input-container">
+    <!-- 引用消息预览 -->
+    <div v-if="quotedMessage" class="quote-preview-wrapper">
+      <div class="quote-preview">
+        <icon-reply class="quote-icon" />
+        <span class="quote-text">{{ truncateQuote(quotedMessage.content) }}</span>
+        <a-button type="text" size="mini" class="quote-close-btn" @click="$emit('clear-quote')">
+          <template #icon><icon-close /></template>
+        </a-button>
+      </div>
+    </div>
+
     <!-- 图片预览区域 -->
     <div v-if="imagePreview" class="image-preview-wrapper">
       <div class="image-preview">
@@ -77,33 +88,52 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { 
-  Textarea as ATextarea, 
-  Button as AButton, 
-  Message 
+import {
+  Textarea as ATextarea,
+  Button as AButton,
+  Message
 } from '@arco-design/web-vue';
-import { IconImage, IconClose, IconMindMapping } from '@arco-design/web-vue/es/icon';
+import { IconImage, IconClose, IconMindMapping, IconReply } from '@arco-design/web-vue/es/icon';
 import TokenUsageIndicator from './TokenUsageIndicator.vue';
+
+interface ChatMessage {
+  content: string;
+  isUser: boolean;
+  time: string;
+  messageType?: 'human' | 'ai' | 'tool' | 'system' | 'agent_step' | 'step_separator';
+  imageBase64?: string;
+  imageDataUrl?: string;
+}
 
 interface Props {
   isLoading: boolean;
-  supportsVision?: boolean; // 当前模型是否支持图片输入
-  brainMode?: boolean; // 是否为大脑模式
-  contextTokenCount?: number; // 当前上下文Token数
-  contextLimit?: number; // 上下文Token限制
+  supportsVision?: boolean;
+  brainMode?: boolean;
+  contextTokenCount?: number;
+  contextLimit?: number;
+  quotedMessage?: ChatMessage | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   supportsVision: false,
   brainMode: false,
   contextTokenCount: 0,
-  contextLimit: 128000
+  contextLimit: 128000,
+  quotedMessage: null
 });
 
 const emit = defineEmits<{
-  'send-message': [data: { message: string; image?: string; imageDataUrl?: string }];
+  'send-message': [data: { message: string; image?: string; imageDataUrl?: string; quotedMessage?: ChatMessage | null }];
   'update:brain-mode': [value: boolean];
+  'clear-quote': [];
 }>();
+
+// 截断引用文本
+const truncateQuote = (text: string): string => {
+  const maxLen = 80;
+  const singleLine = text.replace(/\n/g, ' ').trim();
+  return singleLine.length > maxLen ? singleLine.slice(0, maxLen) + '...' : singleLine;
+};
 
 const inputMessage = ref('');
 const imageFile = ref<File | null>(null);
@@ -162,9 +192,10 @@ const handleSendMessage = async () => {
   emit('send-message', {
     message: message || '请查看图片',
     image: imageBase64,
-    imageDataUrl: imageDataUrl
+    imageDataUrl: imageDataUrl,
+    quotedMessage: props.quotedMessage
   });
-  
+
   // 清空输入
   inputMessage.value = '';
   removeImage();
@@ -296,6 +327,45 @@ const handlePaste = (e: ClipboardEvent) => {
   padding: 16px 20px;
   background-color: white;
   border-top: 1px solid #e5e6eb;
+}
+
+/* 引用消息预览 */
+.quote-preview-wrapper {
+  margin-bottom: 12px;
+}
+
+.quote-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, #f0f5ff 0%, #e8f3ff 100%);
+  border-left: 3px solid #165dff;
+  border-radius: 0 8px 8px 0;
+}
+
+.quote-icon {
+  color: #165dff;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.quote-text {
+  flex: 1;
+  font-size: 13px;
+  color: #4e5969;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-close-btn {
+  flex-shrink: 0;
+  color: #86909c !important;
+}
+
+.quote-close-btn:hover {
+  color: #f53f3f !important;
 }
 
 /* 图片预览区域 */

@@ -12,6 +12,9 @@
       :key="index"
       :message="message"
       @toggle-expand="$emit('toggle-expand', $event)"
+      @quote="$emit('quote', $event)"
+      @retry="$emit('retry', $event)"
+      @delete="$emit('delete', $event)"
     />
   </div>
 </template>
@@ -51,6 +54,9 @@ const props = defineProps<Props>();
 
 defineEmits<{
   'toggle-expand': [message: ChatMessage];
+  'quote': [message: ChatMessage];
+  'retry': [message: ChatMessage];
+  'delete': [message: ChatMessage];
 }>();
 
 const messagesContainer = ref<HTMLElement | null>(null);

@@ -640,6 +640,48 @@ export async function deleteChatHistory(
 }
 
 /**
+ * 回滚聊天历史记录到指定消息数量
+ * @param sessionId 会话ID
+ * @param projectId 项目ID
+ * @param keepCount 要保留的消息数量
+ */
+export async function rollbackChatHistory(
+  sessionId: string,
+  projectId: number | string,
+  keepCount: number
+): Promise<ApiResponse<{ deleted_count: number; kept_count: number }>> {
+  const response = await request<{ deleted_count: number; kept_count: number }>({
+    url: `${API_BASE_URL}/history/`,
+    method: 'PATCH',
+    params: {
+      session_id: sessionId,
+      project_id: String(projectId)
+    },
+    data: {
+      keep_count: keepCount
+    }
+  });
+
+  if (response.success) {
+    return {
+      status: 'success',
+      code: 200,
+      message: response.message || '聊天历史已回滚',
+      data: response.data!,
+      errors: undefined
+    };
+  } else {
+    return {
+      status: 'error',
+      code: 500,
+      message: response.error || 'Failed to rollback chat history',
+      data: { deleted_count: 0, kept_count: 0 },
+      errors: { detail: [response.error || 'Unknown error'] }
+    };
+  }
+}
+
+/**
  * 获取用户的所有会话列表
  * @param projectId 项目ID
  */

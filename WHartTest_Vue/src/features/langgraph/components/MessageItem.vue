@@ -83,6 +83,31 @@
           v-html="formattedContent"
         ></div>
       </div>
+
+      <!-- 消息操作按钮 -->
+      <div v-if="showActions" class="message-actions">
+        <a-tooltip content="复制" mini>
+          <a-button type="text" size="mini" class="action-btn" @click="handleCopy">
+            <template #icon><icon-copy /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="canQuote" content="引用" mini>
+          <a-button type="text" size="mini" class="action-btn" @click="$emit('quote', message)">
+            <template #icon><icon-reply /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="canRetry" content="重试" mini>
+          <a-button type="text" size="mini" class="action-btn" @click="$emit('retry', message)">
+            <template #icon><icon-refresh /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="canDelete" content="删除" mini>
+          <a-button type="text" size="mini" class="action-btn action-btn-danger" @click="$emit('delete', message)">
+            <template #icon><icon-delete /></template>
+          </a-button>
+        </a-tooltip>
+      </div>
+
       <div class="message-time">{{ message.time }}</div>
     </div>
     </template>
@@ -91,6 +116,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { Button as AButton, Tooltip as ATooltip, Message } from '@arco-design/web-vue';
+import { IconCopy, IconReply, IconRefresh, IconDelete } from '@arco-design/web-vue/es/icon';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import logo from '/WHartTest.png';
@@ -138,7 +165,30 @@ const props = defineProps<Props>();
 
 defineEmits<{
   'toggle-expand': [message: ChatMessage];
+  'quote': [message: ChatMessage];
+  'retry': [message: ChatMessage];
+  'delete': [message: ChatMessage];
 }>();
+
+// 操作按钮可见性
+const showActions = computed(() => {
+  const type = props.message.messageType;
+  return !['step_separator', 'agent_step'].includes(type || '') && !props.message.isLoading;
+});
+
+const canQuote = computed(() => ['human', 'ai'].includes(props.message.messageType || ''));
+const canRetry = computed(() => ['human', 'ai'].includes(props.message.messageType || '') && !props.message.isStreaming && !props.message.isLoading);
+const canDelete = computed(() => props.message.messageType !== 'system' && showActions.value);
+
+// 复制到剪贴板
+const handleCopy = async () => {
+  try {
+    await navigator.clipboard.writeText(props.message.content);
+    Message.success('已复制到剪贴板');
+  } catch {
+    Message.error('复制失败');
+  }
+};
 
 // 消息样式类
 const messageClass = computed(() => {
@@ -653,6 +703,48 @@ const formatToolMessage = (content: string) => {
   content: '▼';
 }
 
+/* 消息操作按钮 */
+.message-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.message-wrapper:hover .message-actions {
+  opacity: 1;
+}
+
+.action-btn {
+  padding: 4px 6px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  border-radius: 4px !important;
+  color: #86909c !important;
+  transition: all 0.2s ease !important;
+}
+
+.action-btn:hover {
+  background-color: #f2f3f5 !important;
+  color: #165dff !important;
+}
+
+.action-btn-danger:hover {
+  background-color: #ffece8 !important;
+  color: #f53f3f !important;
+}
+
+.user-message .action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.2) !important;
+  color: white !important;
+}
+
+.user-message .action-btn-danger:hover {
+  background-color: rgba(245, 63, 63, 0.3) !important;
+  color: white !important;
+}
+
 .message-time {
   font-size: 12px;
   color: #86909c;
@@ -828,6 +920,16 @@ const formatToolMessage = (content: string) => {
   margin: 8px 0;
   padding-left: 12px;
   color: #666;
+}
+
+/* 用户消息中的引用样式 - 适配蓝色背景 */
+.user-message .message-bubble :deep(blockquote) {
+  border-left-color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.85);
+  background-color: rgba(255, 255, 255, 0.1);
+  padding: 8px 12px;
+  border-radius: 0 6px 6px 0;
+  margin-bottom: 12px;
 }
 
 .message-bubble :deep(table) {
