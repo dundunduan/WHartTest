@@ -445,7 +445,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, shallowRef } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, shallowRef, watch } from 'vue';
 import { Message, type FormInstance } from '@arco-design/web-vue';
 import { 
   IconRefresh, IconEye, IconPlayArrow, IconDelete, IconPlus, IconEdit, IconCode, IconPause, IconLoading, IconCodeBlock, IconClose, IconLeft, IconRight
@@ -1115,6 +1115,11 @@ const getExecutionStatusColor = (status: string) => {
 onMounted(() => {
   fetchScripts();
   window.addEventListener('resize', updateWindowWidth);
+});
+
+watch(() => projectStore.currentProjectId, () => {
+  pagination.value.current = 1;
+  fetchScripts();
 });
 
 onUnmounted(() => {

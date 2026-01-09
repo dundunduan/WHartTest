@@ -958,19 +958,20 @@ class AutomationScriptViewSet(viewsets.ModelViewSet):
         queryset = AutomationScript.objects.select_related(
             'test_case', 'test_case__project', 'creator', 'source_task'
         )
-        
-        # 支持按项目过滤
+
+        # 强制按项目过滤，未指定项目时返回空集
         project_id = self.request.query_params.get('project_id')
-        if project_id:
-            queryset = queryset.filter(test_case__project_id=project_id)
-        
-        # 非管理员只能看到自己所属项目的脚本
+        if not project_id:
+            return queryset.none()
+        queryset = queryset.filter(test_case__project_id=project_id)
+
+        # 非管理员需验证项目访问权限
         user = self.request.user
         if not user.is_superuser:
-            # 获取用户所属的项目 ID 列表
             user_project_ids = user.project_memberships.values_list('project_id', flat=True)
-            queryset = queryset.filter(test_case__project_id__in=user_project_ids)
-        
+            if int(project_id) not in user_project_ids:
+                return queryset.none()
+
         return queryset
     
     def perform_create(self, serializer):
