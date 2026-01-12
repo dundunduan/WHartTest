@@ -382,8 +382,8 @@ const handleOk = () => {
     }
   }
 
-  // 完整生成模式：如果启用了知识库，必须选择知识库ID
-  if (formState.generateMode === 'full' && formState.useKnowledgeBase && !formState.knowledgeBaseId) {
+  // 完整生成/标题生成模式：如果启用了知识库，必须选择知识库ID
+  if (['full', 'title_only'].includes(formState.generateMode) && formState.useKnowledgeBase && !formState.knowledgeBaseId) {
     Message.error('启用知识库后必须选择一个知识库');
     return;
   }

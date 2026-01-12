@@ -417,7 +417,7 @@ ${formData.selectedModule.content}
 - 根据用例名称在知识库中检索最相似的用例
 
 [待补全用例列表]
-${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 所属模块: ${tc.module_detail || '未分配'}`).join('\n')}
+${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 模块ID: ${tc.module_id ?? '未分配'}, 模块: ${tc.module_detail || '未分配'}`).join('\n')}
 
 项目ID: ${currentProjectId.value}
       `.trim();
@@ -438,7 +438,7 @@ ${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}
 - 如果无法从知识库和需求文档中找到相关信息，请明确告知
 
 [待生成步骤的用例列表]
-${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 所属模块: ${tc.module_detail || '未分配'}`).join('\n')}
+${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 模块ID: ${tc.module_id ?? '未分配'}, 模块: ${tc.module_detail || '未分配'}`).join('\n')}
 
 [需求模块参考]
 标题: ${formData.selectedModule?.title || '无'}
@@ -456,11 +456,13 @@ ${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}
     message,
     project_id: String(currentProjectId.value),
     prompt_id: formData.promptId,
-    use_knowledge_base: formData.generateMode === 'full' ? formData.useKnowledgeBase : ['kb_complete', 'kb_generate'].includes(formData.generateMode),
+    use_knowledge_base: ['full', 'title_only'].includes(formData.generateMode)
+      ? formData.useKnowledgeBase
+      : ['kb_complete', 'kb_generate'].includes(formData.generateMode),
   };
 
   // 如果需要知识库，添加知识库ID
-  if ((formData.generateMode === 'full' && formData.useKnowledgeBase && formData.knowledgeBaseId) ||
+  if ((['full', 'title_only'].includes(formData.generateMode) && formData.useKnowledgeBase && formData.knowledgeBaseId) ||
       (['kb_complete', 'kb_generate'].includes(formData.generateMode) && formData.knowledgeBaseId)) {
     requestData.knowledge_base_id = formData.knowledgeBaseId;
   }
