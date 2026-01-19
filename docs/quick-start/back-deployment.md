@@ -2,60 +2,11 @@
 
 本指南将引导您完成 WHartTest 后端服务的生产环境部署。系统已改为使用API方式调用嵌入模型，无需本地下载模型文件。
 
-## 📊 数据库配置
 
-系统支持两种数据库：
-- **PostgreSQL**（默认）：生产环境推荐，支持高并发
-- **qdrant**：开源的高性能向量数据库
-
-### 使用 PostgreSQL（默认）
-
-1. **安装 PostgreSQL**
-```bash
-# Ubuntu/Debian
-sudo apt install postgresql postgresql-contrib
-
-# 启动服务
-sudo systemctl start postgresql
-sudo systemctl enable postgresql
-```
-
-2. **创建数据库和用户**
-```bash
-# 切换到 postgres 用户
-sudo -u postgres psql
-
-# 在 PostgreSQL 中执行
-CREATE DATABASE wharttest;
-CREATE USER wharttest_user WITH PASSWORD 'your_secure_password';
-GRANT ALL PRIVILEGES ON DATABASE wharttest TO wharttest_user;
-\q
-```
-
-3. **配置环境变量**
-```bash
-# 设置数据库类型为 PostgreSQL
-export DATABASE_TYPE=postgres
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_DB=wharttest
-export POSTGRES_USER=wharttest_user
-export POSTGRES_PASSWORD=your_secure_password
-```
-
-4. **执行数据库迁移**
-```bash
-python manage.py migrate
-```
-
-## 部署qdrant向量数据库服务
-```bash
-docker-compose up -d qdrant
-```
-
----
 
 ### 🛠️ 后端部署
+部署后端服务前，需要部署以下服务：
+xinference、playwright-mcp、qdrant、postgres、redis、drawio
 
 
 #### 1. 系统准备
