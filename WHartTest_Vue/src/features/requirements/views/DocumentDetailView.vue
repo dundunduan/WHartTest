@@ -135,10 +135,12 @@
         <div v-if="document?.status === 'uploaded'" class="upload-hint">
           <a-alert
             type="warning"
-            message="请先进行拆分"
-            description="上传完成后请使用 AI 拆分生成模块，用例生成和后续评审依赖这些模块。"
-            show-icon
-          />
+            :show-icon="true"
+            :closable="false"
+          >
+            <template #title>请先进行拆分</template>
+            <template #content>上传完成后请使用 AI 拆分生成模块，用例生成和后续评审依赖这些模块。</template>
+          </a-alert>
         </div>
       </a-card>
     </div>
@@ -424,7 +426,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, h } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, h, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Message, Modal, Input as AInput } from '@arco-design/web-vue';
 import {
@@ -450,10 +452,14 @@ import type {
 } from '../types';
 import { DocumentStatusDisplay, DocumentTypeDisplay } from '../types';
 import SplitOptionsModal from '../components/SplitOptionsModal.vue';
+import { useProjectStore } from '@/store/projectStore';
 
 // 路由
 const route = useRoute();
 const router = useRouter();
+
+// Store
+const projectStore = useProjectStore();
 
 // 响应式数据
 const loading = ref(false);
@@ -1164,6 +1170,17 @@ const clearSelection = () => {
 onMounted(() => {
   loadDocument();
 });
+
+// 监听项目变化 - 当在详情页切换项目时，返回到列表页
+watch(
+  () => projectStore.currentProjectId,
+  (newProjectId, oldProjectId) => {
+    if (newProjectId && oldProjectId && newProjectId !== oldProjectId) {
+      // 项目切换时，返回到需求文档列表页
+      router.push('/requirements');
+    }
+  }
+);
 
 // 组件卸载时停止轮询
 onBeforeUnmount(() => {
@@ -1913,6 +1930,80 @@ onBeforeUnmount(() => {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #e5e6eb;
+}
+
+/* 调整警告提示框的布局，确保图标和文字完美对齐并垂直居中 */
+.upload-hint :deep(.arco-alert) {
+  padding: 14px 20px; /* 统一上下内边距 */
+  min-height: 52px; /* 设置合适的最小高度 */
+  width: 100%;
+  display: flex;
+  align-items: center; /* 垂直居中对齐 */
+  gap: 10px; /* 图标与内容之间的间距 */
+}
+
+/* 确保警告图标完美垂直居中 */
+.upload-hint :deep(.arco-alert-icon) {
+  font-size: 16px; /* 适当大小的图标 */
+  margin: 0;
+  display: flex;
+  align-items: center; /* 图标垂直居中 */
+  height: auto;
+  line-height: 1; /* 确保图标行高一致 */
+  flex-shrink: 0; /* 防止图标被压缩 */
+}
+
+/* 优化内容区域的布局 */
+.upload-hint :deep(.arco-alert-content-wrapper) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center; /* 内容垂直居中 */
+  align-items: flex-start;
+  gap: 3px; /* 标题与内容之间的合适间距 */
+}
+
+/* 标题样式优化（"请先进行拆分"）*/
+.upload-hint :deep(.arco-alert-title) {
+  font-size: 14px; /* 适中的字体大小 */
+  font-weight: 600;
+  margin: 0;
+  line-height: 1.4; /* 合适的行高 */
+  display: flex;
+  align-items: center; /* 标题文字垂直居中 */
+  color: #333; /* 确保文字颜色清晰 */
+}
+
+/* 内容样式优化（提示文字）*/
+.upload-hint :deep(.arco-alert-content) {
+  font-size: 12px; /* 稍小的字体大小 */
+  line-height: 1.4;
+  margin: 0;
+  color: #666; /* 提示文字用稍浅的颜色 */
+  display: flex;
+  align-items: center; /* 内容文字垂直居中 */
+}
+
+/* 特殊处理：确保整体内容完美居中 */
+.upload-hint :deep(.arco-alert-body) {
+  display: flex;
+  align-items: center; /* 整体内容垂直居中 */
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* 移除可能存在的额外边距 */
+.upload-hint :deep(.arco-alert-with-title) {
+  align-items: center; /* 有标题时也保持居中 */
+}
+
+/* 调整警告提示框的内边距和高度 */
+.upload-hint :deep(.arco-alert) {
+  padding: 20px 24px;
+  max-height: 30px;
+  width: 100%;
+  align-items: center;
 }
 
 /* 评审报告区域样式 */

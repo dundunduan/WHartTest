@@ -12,15 +12,11 @@ xinference、playwright-mcp、qdrant、postgres、redis、drawio
 #### 1. 系统准备
 首先，安装 `uv`，一个先进的 Python 包管理器。
 ```bash
-# 安装 uv (以 Ubuntu 为例)
+# 安装 uv (官方安装方式)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 将 uv 添加到当前会话的 PATH
-source $HOME/.cargo/env
-
-# windows安装uv
+# python安装uv
 pip install uv
-# 注意：为了永久生效，请将 `source $HOME/.cargo/env` 添加到您的 shell 配置文件中 (如 ~/.bashrc 或 ~/.zshrc)
 ```
 
 #### 2. 克隆项目
@@ -45,7 +41,15 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-#### 5. 数据库迁移和初始化
+#### 5. env配置
+```
+cp .env.example .env  # 创建env副本使其生效
+
+注意：env中的向量库、数据库的具体配置以及后端地址需要手动修改和你实际部署的服务配置要对应
+```
+
+
+#### 6. 数据库迁移和初始化
 ```bash
 # 执行数据库迁移
 uv run python manage.py migrate
@@ -53,7 +57,7 @@ uv run python manage.py migrate
 uv run python manage.py init_admin
 ```
 
-#### 6. 启动服务
+#### 7.. 启动服务
 ```bash
 # 开发环境启动
 uv run uvicorn wharttest_django.asgi:application --reload --host 127.0.0.1 --port 8000
