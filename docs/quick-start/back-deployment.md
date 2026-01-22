@@ -32,7 +32,8 @@ cd WHartTest/WHartTest_Django
 uv venv --python 3.11 
 
 # 激活虚拟环境
-source .venv/bin/activate
+source .venv/bin/activate #ubantu激活方式
+.venv\Scripts\activate #Windows激活方式
 ```
 
 #### 4. 安装依赖

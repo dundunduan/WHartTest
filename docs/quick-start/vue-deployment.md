@@ -34,7 +34,9 @@ npm install
 ### 3. 配置开发环境
 
 在开始本地开发之前，您需要在 `WHartTest_Vue` 根目录下创建一个 `.env` 文件来配置环境变量。这个文件用于指定开发服务器的 API 地址和代理设置。
-
+```bash
+cp .env.production .env #创建.env副本使其生效
+```
 **示例 `.env` 文件:**
 
 ```env
