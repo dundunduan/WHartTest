@@ -235,6 +235,8 @@ class ProjectViewSet(BaseModelViewSet):
         from testcases.models import TestCase, AutomationScript, TestExecution
         from skills.models import Skill
         from mcp_tools.models import RemoteMCPConfig
+        from requirements.models import RequirementDocument
+        from knowledge.models import Document
 
         # 1. 功能用例统计（按审核状态）
         testcase_stats = TestCase.objects.filter(project=project).aggregate(
@@ -325,6 +327,16 @@ class ProjectViewSet(BaseModelViewSet):
             'active': Skill.objects.filter(is_active=True).count(),
         }
 
+        # 7. 需求文档统计（当前项目）
+        requirement_stats = {
+            'total': RequirementDocument.objects.filter(project=project).count(),
+        }
+
+        # 8. 知识库文档统计（全局所有知识库文档）
+        knowledge_stats = {
+            'total': Document.objects.count(),
+        }
+
         # 构建响应数据
         response_data = {
             'project': {
@@ -374,6 +386,8 @@ class ProjectViewSet(BaseModelViewSet):
             },
             'mcp': mcp_stats,
             'skills': skill_stats,
+            'requirements': requirement_stats,
+            'knowledge': knowledge_stats,
         }
 
         return Response(response_data)

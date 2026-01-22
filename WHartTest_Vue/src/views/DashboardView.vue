@@ -141,45 +141,20 @@
             <div class="panel-body">
               <div class="resource-grid">
                 <div class="resource-block">
-                  <div class="resource-label">UI用例</div>
+                  <div class="resource-label">需求文档</div>
                   <div class="resource-stats">
                     <div class="stat-row">
-                      <span>草稿</span>
-                      <span class="stat-num">{{ statistics?.automation_scripts?.by_status?.draft || 0 }}</span>
-                    </div>
-                    <div class="stat-row">
-                      <span>启用</span>
-                      <span class="stat-num active">{{ statistics?.automation_scripts?.by_status?.active || 0 }}</span>
-                    </div>
-                    <div class="stat-row">
-                      <span>废弃</span>
-                      <span class="stat-num deprecated">{{ statistics?.automation_scripts?.by_status?.deprecated || 0 }}</span>
+                      <span>项目文档数</span>
+                      <span class="stat-num">{{ statistics?.requirements?.total || 0 }}</span>
                     </div>
                   </div>
                 </div>
                 <div class="resource-block">
-                  <div class="resource-label">MCP配置</div>
+                  <div class="resource-label">知识库文档</div>
                   <div class="resource-stats">
                     <div class="stat-row">
-                      <span>总数</span>
-                      <span class="stat-num">{{ statistics?.mcp?.total || 0 }}</span>
-                    </div>
-                    <div class="stat-row">
-                      <span>启用</span>
-                      <span class="stat-num active">{{ statistics?.mcp?.active || 0 }}</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="resource-block">
-                  <div class="resource-label">Skills</div>
-                  <div class="resource-stats">
-                    <div class="stat-row">
-                      <span>总数</span>
-                      <span class="stat-num">{{ statistics?.skills?.total || 0 }}</span>
-                    </div>
-                    <div class="stat-row">
-                      <span>启用</span>
-                      <span class="stat-num active">{{ statistics?.skills?.active || 0 }}</span>
+                      <span>总文档数</span>
+                      <span class="stat-num">{{ statistics?.knowledge?.total || 0 }}</span>
                     </div>
                   </div>
                 </div>
@@ -437,7 +412,7 @@ onMounted(() => {
 /* 主内容区域 */
 .main-section {
   display: grid;
-  grid-template-columns: 1fr 280px 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 10px;
 }
 
@@ -611,15 +586,31 @@ onMounted(() => {
 }
 
 /* 资源统计 */
+.resource-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.resource-panel .panel-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
 .resource-grid {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
 .resource-block {
+  flex: 1;
   padding-bottom: 12px;
   border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .resource-block:last-child {

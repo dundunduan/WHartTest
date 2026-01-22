@@ -637,6 +637,12 @@ export interface ProjectStatistics {
     total: number;
     active: number;
   };
+  requirements: {
+    total: number;
+  };
+  knowledge: {
+    total: number;
+  };
 }
 
 interface ProjectStatisticsResponse {
