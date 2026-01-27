@@ -16,7 +16,8 @@ WHartTest 是一个基于 Django REST Framework 构建的AI驱动测试自动化
 
 注意！！！win环境需要在 Open Git Bash hrre 中打开
 
-![alt text](img\git_bash.png)
+<img width="369" height="108" alt="image" src="https://github.com/user-attachments/assets/3d4429a1-395d-4724-b58c-2367cd13ea11" />
+
 
 ```bash
 # 1. 克隆仓库
