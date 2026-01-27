@@ -351,10 +351,20 @@ defineExpose({
 <style scoped>
 .module-panel-wrapper {
   width: 280px;
-  min-width: 240px;
+  min-width: 200px;
+  max-width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .module-panel-wrapper {
+    width: 100%;
+    height: 200px;
+    min-height: 150px;
+  }
 }
 
 .module-panel {
@@ -444,6 +454,13 @@ defineExpose({
 
 .module-action-button {
   width: 80px;
+  background-color: #ffffff; /* 修改操作按钮背景色 */
+  border-color: #ffffff;
+}
+
+.module-action-button:hover {
+  background-color: #ffffff; /* 悬停时的颜色 */
+  border-color: #ffffff;
 }
 
 :deep(.arco-dropdown-option) {

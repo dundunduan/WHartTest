@@ -7,7 +7,6 @@ export interface RemoteMcpConfig {
   transport: 'stdio' | 'streamable_http' | 'sse';
   headers?: Record<string, string>;
   is_active: boolean;
-  owner?: string;
   created_at?: string;
   updated_at?: string;
 }

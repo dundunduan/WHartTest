@@ -68,7 +68,10 @@
           class="menu"
         >
 
-          <!-- 仪表盘菜单已隐藏 -->
+          <a-menu-item key="dashboard">
+            <template #icon><icon-home /></template>
+            <router-link to="/dashboard">首页</router-link>
+          </a-menu-item>
 
           <a-menu-item key="projects" v-if="hasProjectsPermission">
             <template #icon><icon-storage /></template>
@@ -149,6 +152,10 @@
               <template #icon><icon-cloud /></template>
               <a href="#" @click="checkProjectAndNavigate($event, '/remote-mcp-configs')">MCP配置</a>
             </a-menu-item>
+            <a-menu-item key="skills" v-if="hasMcpConfigsPermission">
+              <template #icon><icon-apps /></template>
+              <a href="#" @click="checkProjectAndNavigate($event, '/skills')">Skills管理</a>
+            </a-menu-item>
           </a-sub-menu>
         </a-menu>
         <!-- 侧边栏底部收起/展开按钮 -->
@@ -214,6 +221,7 @@ import {
   IconHistory,
   IconExperiment,
   IconRobot,
+  IconHome,
 } from '@arco-design/web-vue/es/icon';
 import '@arco-design/web-vue/dist/arco.css'; // 引入 Arco Design 样式
 
@@ -240,7 +248,7 @@ const userInitial = computed(() => {
 // 当前激活的菜单项
 const activeMenu = computed(() => {
   const path = router.currentRoute.value.path;
-  // 仪表盘路由已移除，不再识别
+  if (path.startsWith('/dashboard')) return 'dashboard';
   if (path.startsWith('/projects')) return 'projects';
   if (path.startsWith('/requirements')) return 'requirements'; // 添加对需求管理路由的识别
   if (path.startsWith('/testsuites')) return 'testsuites'; // 添加对测试套件路由的识别
@@ -581,7 +589,7 @@ onMounted(async () => {
   margin: 0 0 10px 10px;
   border-radius: 8px;
   box-shadow: -4px 0 10px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
-  height: calc(100vh - 86px);
+  height: auto; /* 让 flex 自动撑开 */
 }
 
 .menu {
@@ -589,8 +597,10 @@ onMounted(async () => {
   color: #333333;
   border-right: none;
   border-radius: 8px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   text-align: left;
+  max-height: calc(100% - 50px);
 }
 
 :deep(.arco-menu-light) {
@@ -725,18 +735,19 @@ onMounted(async () => {
 }
 
 .main-layout {
-  min-height: 100vh;
+  height: 100vh;
   background-color: #f8f9fc;
+  overflow: hidden;
 }
 
 .inner-layout {
-  height: calc(100vh - 86px);
+  height: calc(100vh - 76px); /* Header(56px) + margin(10px*2) = 76px */
 }
 
 .content {
   padding: 0;
   background-color: #f8f9fc;
-  height: calc(100vh - 86px);
+  height: calc(100vh - 86px); /* 保持 86px 是因为底部还有 10px 的 margin */
   margin: 0 10px 10px 10px;
   overflow-y: auto; /* 允许垂直滚动 */
   border-radius: 8px;

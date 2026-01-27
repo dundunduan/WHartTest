@@ -10,17 +10,21 @@ def requirement_document_upload_path(instance, filename):
     return f'requirement_documents/{instance.project.id}/{filename}'
 
 
+def document_image_upload_path(instance, filename):
+    """文档图片上传路径"""
+    return f'requirement_documents/{instance.document.project.id}/{instance.document.id}/images/{filename}'
+
+
 class RequirementDocument(models.Model):
     """
     需求文档模型
     """
     DOCUMENT_TYPES = [
         ('pdf', 'PDF'),
+        ('doc', 'Word文档'),
         ('docx', 'Word文档'),
-        ('pptx', 'PowerPoint'),
         ('txt', '文本文件'),
         ('md', 'Markdown'),
-        ('html', 'HTML'),
     ]
 
     STATUS_CHOICES = [
@@ -91,6 +95,10 @@ class RequirementDocument(models.Model):
     word_count = models.IntegerField(_('字数'), default=0)
     page_count = models.IntegerField(_('页数'), default=0)
 
+    # 图片信息
+    has_images = models.BooleanField(_('包含图片'), default=False)
+    image_count = models.IntegerField(_('图片数量'), default=0)
+
     class Meta:
         verbose_name = _('需求文档')
         verbose_name_plural = _('需求文档')
@@ -112,6 +120,53 @@ class RequirementDocument(models.Model):
 
     def __str__(self):
         return f"{self.project.name} - {self.title} v{self.version}"
+
+
+class DocumentImage(models.Model):
+    """
+    文档图片模型 - 存储从需求文档中提取的图片
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(
+        RequirementDocument,
+        on_delete=models.CASCADE,
+        related_name='images',
+        verbose_name=_('所属文档')
+    )
+
+    # 图片文件
+    image_file = models.ImageField(
+        _('图片文件'),
+        upload_to=document_image_upload_path
+    )
+
+    # 图片标识（用于占位符匹配）
+    image_id = models.CharField(_('图片ID'), max_length=50, help_text='如 img_001，用于占位符匹配')
+
+    # 排序
+    order = models.IntegerField(_('排序'), default=0)
+
+    # 图片元数据
+    original_filename = models.CharField(_('原始文件名'), max_length=255, blank=True)
+    content_type = models.CharField(_('MIME类型'), max_length=100, default='image/png')
+    width = models.IntegerField(_('宽度'), null=True, blank=True)
+    height = models.IntegerField(_('高度'), null=True, blank=True)
+    file_size = models.IntegerField(_('文件大小'), default=0)
+
+    # 时间戳
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('文档图片')
+        verbose_name_plural = _('文档图片')
+        ordering = ['document', 'order']
+        indexes = [
+            models.Index(fields=['document', 'order']),
+            models.Index(fields=['document', 'image_id']),
+        ]
+
+    def __str__(self):
+        return f"{self.document.title} - {self.image_id}"
 
 
 class RequirementModule(models.Model):
@@ -214,6 +269,11 @@ class ReviewReport(models.Model):
         default='pending'
     )
 
+    # 进度跟踪字段
+    progress = models.FloatField(_('评审进度'), default=0, help_text='0-1小数')
+    current_step = models.CharField(_('当前步骤'), max_length=50, blank=True, default='')
+    completed_steps = models.JSONField(_('已完成步骤'), default=list, blank=True)
+
     # 评审结果
     overall_rating = models.CharField(
         _('总体评价'),
@@ -228,6 +288,7 @@ class ReviewReport(models.Model):
     completeness_score = models.IntegerField(_('完整性评分'), default=0, help_text='0-100分')
     testability_score = models.IntegerField(_('可测性评分'), default=0, help_text='0-100分')
     feasibility_score = models.IntegerField(_('可行性评分'), default=0, help_text='0-100分')
+    logic_score = models.IntegerField(_('逻辑分析评分'), default=0, help_text='0-100分')
 
     # 问题统计
     total_issues = models.IntegerField(_('问题总数'), default=0)
@@ -244,7 +305,7 @@ class ReviewReport(models.Model):
         _('专项分析详情'),
         default=dict,
         blank=True,
-        help_text='存储完整性、一致性、可测性、可行性、清晰度5个专项分析的详细结果'
+        help_text='存储完整性、一致性、可测性、可行性、清晰度、逻辑分析6个专项分析的详细结果'
     )
 
     # 元数据
@@ -270,6 +331,7 @@ class ReviewIssue(models.Model):
         ('completeness', '完整性'),
         ('consistency', '一致性'),
         ('feasibility', '可行性'),
+        ('logic', '逻辑性'),
     ]
 
     PRIORITY_CHOICES = [

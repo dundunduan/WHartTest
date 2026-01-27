@@ -10,6 +10,23 @@
       </div>
       <div class="form-actions" v-if="testCaseDetail">
         <a-space>
+          <!-- 用例导航按钮（当有用例列表时显示） -->
+          <template v-if="totalTestCases > 0">
+            <a-button-group>
+              <a-button :disabled="!hasPrevTestCase" @click="goToPrevTestCase">
+                <template #icon><icon-left /></template>
+                上一条
+              </a-button>
+              <a-button disabled class="nav-indicator">
+                {{ currentTestCaseIndex + 1 }} / {{ totalTestCases }}
+              </a-button>
+              <a-button :disabled="!hasNextTestCase" @click="goToNextTestCase">
+                下一条
+                <template #icon><icon-right /></template>
+              </a-button>
+            </a-button-group>
+            <a-divider direction="vertical" />
+          </template>
           <a-button type="primary" @click="handleEdit">编辑</a-button>
           <a-button type="primary" status="danger" @click="handleDelete">删除</a-button>
         </a-space>
@@ -28,8 +45,19 @@
         <a-descriptions-item label="优先级">
           <a-tag :color="getLevelColor(testCaseDetail.level)">{{ testCaseDetail.level }}</a-tag>
         </a-descriptions-item>
+        <a-descriptions-item label="审核状态">
+          <a-select
+            :model-value="testCaseDetail.review_status"
+            size="small"
+            style="width: 120px;"
+            @change="(val: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) => handleReviewStatusChange(val as string)"
+          >
+            <a-option v-for="opt in REVIEW_STATUS_OPTIONS" :key="opt.value" :value="opt.value">
+              <a-tag :color="opt.color" size="small">{{ opt.label }}</a-tag>
+            </a-option>
+          </a-select>
+        </a-descriptions-item>
         <a-descriptions-item label="创建者">{{ testCaseDetail.creator_detail?.username || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="创建时间">{{ formatDate(testCaseDetail.created_at) }}</a-descriptions-item>
         <a-descriptions-item label="更新时间">{{ formatDate(testCaseDetail.updated_at) }}</a-descriptions-item>
       </a-descriptions>
 
@@ -307,27 +335,31 @@ import {
   getTestCaseScreenshots,
   deleteTestCaseScreenshot,
   batchDeleteTestCaseScreenshots,
+  updateTestCaseReviewStatus,
   type TestCase,
-  type TestCaseStep,
   type TestCaseScreenshot,
   type UploadScreenshotsRequest,
+  type ReviewStatus,
 } from '@/services/testcaseService';
 import { type TestCaseModule } from '@/services/testcaseModuleService';
-import { formatDate, getLevelColor } from '@/utils/formatters'; // 假设工具函数已移至此处
+import { formatDate, getLevelColor, REVIEW_STATUS_OPTIONS } from '@/utils/formatters';
 
 const props = defineProps<{
   testCaseId: number | null;
   currentProjectId: number | null;
   modules: TestCaseModule[]; // 传入模块列表用于显示模块名称
+  testCaseIds?: number[]; // 当前筛选后的用例ID列表（用于导航）
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'editTestCase', testCaseId: number): void;
   (e: 'testCaseDeleted'): void;
+  (e: 'navigate', testCaseId: number): void;
+  (e: 'reviewStatusChanged'): void; // 审核状态变更后通知父组件刷新
 }>();
 
-const { testCaseId, currentProjectId, modules } = toRefs(props);
+const { testCaseId, currentProjectId, modules, testCaseIds } = toRefs(props);
 
 const loading = ref(false);
 const testCaseDetail = ref<TestCase | null>(null);
@@ -464,6 +496,40 @@ const getModuleNameById = (moduleId?: number | null) => {
     return module ? module.name : '未知模块';
 };
 
+// 用例导航相关计算属性
+const currentTestCaseIndex = computed(() => {
+  if (!testCaseId?.value || !testCaseIds?.value?.length) return -1;
+  return testCaseIds.value.indexOf(testCaseId.value);
+});
+
+const hasPrevTestCase = computed(() => {
+  return currentTestCaseIndex.value > 0;
+});
+
+const hasNextTestCase = computed(() => {
+  if (!testCaseIds?.value?.length) return false;
+  return currentTestCaseIndex.value >= 0 && currentTestCaseIndex.value < testCaseIds.value.length - 1;
+});
+
+const totalTestCases = computed(() => {
+  return testCaseIds?.value?.length || 0;
+});
+
+// 用例导航方法
+const goToPrevTestCase = () => {
+  if (hasPrevTestCase.value && testCaseIds?.value) {
+    const prevId = testCaseIds.value[currentTestCaseIndex.value - 1];
+    emit('navigate', prevId);
+  }
+};
+
+const goToNextTestCase = () => {
+  if (hasNextTestCase.value && testCaseIds?.value) {
+    const nextId = testCaseIds.value[currentTestCaseIndex.value + 1];
+    emit('navigate', nextId);
+  }
+};
+
 onMounted(() => {
   if (testCaseId.value) {
     fetchDetails(testCaseId.value);
@@ -492,6 +558,30 @@ const handleBackToList = () => {
 const handleEdit = () => {
   if (testCaseDetail.value) {
     emit('editTestCase', testCaseDetail.value.id);
+  }
+};
+
+// 处理审核状态变更
+const handleReviewStatusChange = async (newStatus: string) => {
+  if (!testCaseDetail.value || !currentProjectId.value) return;
+
+  try {
+    const response = await updateTestCaseReviewStatus(
+      currentProjectId.value,
+      testCaseDetail.value.id,
+      newStatus as ReviewStatus
+    );
+    if (response.success) {
+      Message.success('状态更新成功');
+      // 更新本地数据
+      testCaseDetail.value.review_status = newStatus as ReviewStatus;
+      // 通知父组件刷新列表和导航ID
+      emit('reviewStatusChanged');
+    } else {
+      Message.error(response.error || '状态更新失败');
+    }
+  } catch (error) {
+    Message.error('状态更新时发生错误');
   }
 };
 
@@ -1519,5 +1609,14 @@ const handleBatchDeleteScreenshots = () => {
 .value {
   color: #4e5969;
   word-break: break-all;
+}
+
+/* 导航指示器样式 */
+.nav-indicator {
+  cursor: default !important;
+  background-color: #f2f3f5 !important;
+  color: #1d2129 !important;
+  font-weight: 500;
+  min-width: 70px;
 }
 </style>

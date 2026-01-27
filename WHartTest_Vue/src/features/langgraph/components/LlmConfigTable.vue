@@ -102,7 +102,7 @@ const columns: TableColumnData[] = [
   { title: '状态', dataIndex: 'is_active', slotName: 'isActive', width: 100, align: 'center' },
   { title: '创建时间', dataIndex: 'created_at', slotName: 'createdAt', width: 150, sortable: { sortDirections: ['ascend', 'descend'] } },
   { title: '更新时间', dataIndex: 'updated_at', slotName: 'updatedAt', width: 150, sortable: { sortDirections: ['ascend', 'descend'] } },
-  { title: '操作', slotName: 'actions', width: 180, align: 'center', fixed: 'right' },
+  { title: '操作', slotName: 'actions', width: 220, align: 'center', fixed: 'right' },
 ];
 
 </script>

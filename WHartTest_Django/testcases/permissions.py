@@ -16,19 +16,19 @@ class IsProjectMemberForTestCase(permissions.BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
-        # 对于创建操作，project_pk 应该在 view.kwargs 中
         project_pk = view.kwargs.get('project_pk')
-        if not project_pk:
-            # 如果没有 project_pk (例如，非嵌套的顶级列表视图，这不符合我们的设计)
-            # 或者如果 project_pk 无法从 URL 获取，则拒绝权限。
-            # 在我们的设计中，所有 testcase 操作都应嵌套在 project下。
-            return False # 或者根据具体情况决定是否允许超级用户等
+        if not project_pk or str(project_pk).lower() in ('none', 'null', 'undefined'):
+            return False
 
-        # 检查用户是否是该项目的成员
+        try:
+            project_pk = int(project_pk)
+        except (ValueError, TypeError):
+            return False
+
         return ProjectMember.objects.filter(
             project_id=project_pk,
             user=request.user,
-            role__in=['owner', 'admin', 'member'] # 任何角色的成员都可以
+            role__in=['owner', 'admin', 'member']
         ).exists()
 
     def has_object_permission(self, request, view, obj):
@@ -81,19 +81,19 @@ class IsProjectMemberForTestCaseModule(permissions.BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
-        # 对于创建操作，project_pk 应该在 view.kwargs 中
         project_pk = view.kwargs.get('project_pk')
-        if not project_pk:
-            # 如果没有 project_pk (例如，非嵌套的顶级列表视图，这不符合我们的设计)
-            # 或者如果 project_pk 无法从 URL 获取，则拒绝权限。
-            # 在我们的设计中，所有 testcase_module 操作都应嵌套在 project下。
-            return False # 或者根据具体情况决定是否允许超级用户等
+        if not project_pk or str(project_pk).lower() in ('none', 'null', 'undefined'):
+            return False
 
-        # 检查用户是否是该项目的成员
+        try:
+            project_pk = int(project_pk)
+        except (ValueError, TypeError):
+            return False
+
         return ProjectMember.objects.filter(
             project_id=project_pk,
             user=request.user,
-            role__in=['owner', 'admin', 'member'] # 任何角色的成员都可以
+            role__in=['owner', 'admin', 'member']
         ).exists()
 
     def has_object_permission(self, request, view, obj):
@@ -127,7 +127,12 @@ class IsProjectMemberForTestSuite(permissions.BasePermission):
             return False
 
         project_pk = view.kwargs.get('project_pk')
-        if not project_pk:
+        if not project_pk or str(project_pk).lower() in ('none', 'null', 'undefined'):
+            return False
+
+        try:
+            project_pk = int(project_pk)
+        except (ValueError, TypeError):
             return False
 
         return ProjectMember.objects.filter(
@@ -162,7 +167,12 @@ class IsProjectMemberForTestExecution(permissions.BasePermission):
             return False
 
         project_pk = view.kwargs.get('project_pk')
-        if not project_pk:
+        if not project_pk or str(project_pk).lower() in ('none', 'null', 'undefined'):
+            return False
+
+        try:
+            project_pk = int(project_pk)
+        except (ValueError, TypeError):
             return False
 
         return ProjectMember.objects.filter(

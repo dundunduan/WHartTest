@@ -5,12 +5,12 @@ from .models import RemoteMCPConfig
 
 @admin.register(RemoteMCPConfig)
 class RemoteMCPConfigAdmin(admin.ModelAdmin):
-    list_display = ('name', 'url', 'is_active', 'owner', 'created_at', 'updated_at')
-    list_filter = ('is_active', 'owner')
+    list_display = ('name', 'url', 'transport', 'is_active', 'created_at', 'updated_at')
+    list_filter = ('is_active', 'transport')
     search_fields = ('name', 'url')
     readonly_fields = ('created_at', 'updated_at')
     fieldsets = (
         (None, {
-            'fields': ('name', 'url', 'headers', 'is_active', 'owner')
+            'fields': ('name', 'url', 'transport', 'headers', 'is_active')
         }),
     )

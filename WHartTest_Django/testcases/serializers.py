@@ -36,7 +36,7 @@ class TestCaseSerializer(serializers.ModelSerializer):
         queryset=TestCaseModule.objects.all(),
         source='module', # 关联到模型中的 'module' 字段
         allow_null=False, # 不允许为空
-        required=False    # 改为 False，允许 PATCH 请求时不传该字段
+        required=True    # 创建时必须选择模块，PATCH请求时如果传入则必须验证
     )
     module_detail = serializers.StringRelatedField(source='module', read_only=True) # 用于只读展示模块名称
 
@@ -47,7 +47,8 @@ class TestCaseSerializer(serializers.ModelSerializer):
         model = TestCase
         fields = [
             'id', 'project', 'module_id', 'module_detail', 'name', 'precondition', 'level', 'notes',
-            'steps', 'screenshot', 'screenshots', 'creator', 'creator_detail', 'created_at', 'updated_at'
+            'steps', 'screenshot', 'screenshots', 'creator', 'creator_detail', 'created_at', 'updated_at',
+            'review_status'
         ]
         read_only_fields = [
             'id', 'project', 'module_detail', # module_detail 仅用于展示
@@ -59,6 +60,18 @@ class TestCaseSerializer(serializers.ModelSerializer):
         # 这里我们假设 project 将从 URL 传递给视图，并在视图的 perform_create 中设置。
         # 因此，对于序列化器本身，project 字段可以被视为只读或在创建时不直接通过此序列化器输入。
         # 为了简单起见，我们先将其保留在 fields 中，视图将负责处理其赋值。
+
+    def validate(self, attrs):
+        """验证数据"""
+        # 创建时必须选择模块
+        if self.instance is None and 'module' not in attrs:
+            raise serializers.ValidationError({"module_id": "请选择所属模块"})
+        
+        # 更新时如果传入了模块字段，则必须验证
+        if self.instance and 'module' in attrs and attrs['module'] is None:
+            raise serializers.ValidationError({"module_id": "请选择所属模块"})
+            
+        return attrs
 
     def create(self, validated_data):
         steps_data = validated_data.pop('steps')
@@ -85,7 +98,9 @@ class TestCaseSerializer(serializers.ModelSerializer):
             instance.module = validated_data['module']
         if 'notes' in validated_data:
             instance.notes = validated_data['notes']
-        
+        if 'review_status' in validated_data:
+            instance.review_status = validated_data['review_status']
+
         # project 和 creator 通常不允许通过此接口更新
         instance.save()
 

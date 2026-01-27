@@ -193,12 +193,15 @@ class CustomAPIEmbeddings(Embeddings):
 
 
 class DocumentProcessor:
-    """文档处理器"""
+    """文档处理器 - 支持结构化解析"""
 
     def __init__(self):
         self.loaders = {
             'pdf': PyPDFLoader,
-            'docx': Docx2txtLoader,
+            'docx': self._load_docx_structured,  # 使用自定义结构化解析
+            'doc': self._load_doc_structured,    # 支持旧版 .doc 格式
+            'xlsx': self._load_excel_structured,  # Excel 表格
+            'xls': self._load_excel_structured,   # 旧版 Excel
             'pptx': UnstructuredPowerPointLoader,
             'txt': TextLoader,
             'md': UnstructuredMarkdownLoader,
@@ -271,18 +274,22 @@ class DocumentProcessor:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
-        loader_class = self.loaders.get(document.document_type)
-        if not loader_class:
+        loader = self.loaders.get(document.document_type)
+        if not loader:
             raise ValueError(f"不支持的文档类型: {document.document_type}")
 
         try:
-            # 对于文本文件，使用UTF-8编码
-            if document.document_type == 'txt':
-                loader = loader_class(file_path, encoding='utf-8')
+            # 检查是否为自定义方法（docx/doc 结构化解析）
+            if callable(loader) and hasattr(loader, '__self__'):
+                docs = loader(file_path, document)
+            elif document.document_type == 'txt':
+                # 对于文本文件，使用UTF-8编码
+                loader_instance = loader(file_path, encoding='utf-8')
+                docs = loader_instance.load()
             else:
-                loader = loader_class(file_path)
-
-            docs = loader.load()
+                # 其他类型使用标准 LangChain loader
+                loader_instance = loader(file_path)
+                docs = loader_instance.load()
 
             # 检查是否成功加载内容
             if not docs:
@@ -330,20 +337,417 @@ class DocumentProcessor:
             else:
                 raise
 
+    def _load_docx_structured(self, file_path: str, document: Document) -> List[LangChainDocument]:
+        """结构化解析 .docx 文件，保留标题层级和表格结构"""
+        try:
+            from docx import Document as DocxDocument
+
+            doc = DocxDocument(file_path)
+            logger.info(f"开始结构化解析 Word 文档，段落数: {len(doc.paragraphs)}, 表格数: {len(doc.tables)}")
+
+            # 创建元素到对象的映射
+            paragraph_map = {p._element: p for p in doc.paragraphs}
+            table_map = {t._element: t for t in doc.tables}
+
+            content_parts = []
+            extracted_paragraphs = 0
+            extracted_tables = 0
+
+            # 按文档顺序遍历所有元素
+            for element in doc.element.body:
+                if element.tag.endswith('p'):  # 段落
+                    paragraph = paragraph_map.get(element)
+                    if paragraph:
+                        text = paragraph.text.strip()
+                        if text:
+                            markdown_text = self._convert_paragraph_to_markdown(paragraph)
+                            content_parts.append(markdown_text)
+                            extracted_paragraphs += 1
+
+                elif element.tag.endswith('tbl'):  # 表格
+                    table = table_map.get(element)
+                    if table:
+                        table_content = self._extract_table_content(table)
+                        if table_content:
+                            content_parts.append(table_content)
+                            extracted_tables += 1
+
+            content = '\n\n'.join(content_parts)
+            logger.info(f"Word 结构化解析完成 - 段落: {extracted_paragraphs}, 表格: {extracted_tables}, 内容长度: {len(content)}")
+
+            return [LangChainDocument(
+                page_content=content,
+                metadata={
+                    "source": document.title,
+                    "document_id": str(document.id),
+                    "document_type": document.document_type,
+                    "title": document.title,
+                    "file_path": file_path,
+                    "structured_parsing": True,
+                    "paragraph_count": extracted_paragraphs,
+                    "table_count": extracted_tables,
+                }
+            )]
+
+        except Exception as e:
+            logger.warning(f"结构化解析失败，降级为纯文本解析: {e}")
+            # 降级为 Docx2txtLoader
+            loader = Docx2txtLoader(file_path)
+            docs = loader.load()
+            for doc in docs:
+                doc.metadata.update({
+                    "source": document.title,
+                    "document_id": str(document.id),
+                    "document_type": document.document_type,
+                    "title": document.title,
+                    "file_path": file_path,
+                    "structured_parsing": False,
+                })
+            return docs
+
+    def _load_doc_structured(self, file_path: str, document: Document) -> List[LangChainDocument]:
+        """解析旧版 .doc 文件，优先转换为 docx 以保留结构"""
+        import tempfile
+        import subprocess
+
+        # 检测文件真实格式
+        with open(file_path, 'rb') as f:
+            header = f.read(8)
+
+        # ZIP 魔数表示实际是 .docx
+        if header[:4] == b'PK\x03\x04':
+            logger.info("检测到 .doc 文件实际为 .docx 格式，使用 docx 解析器")
+            return self._load_docx_structured(file_path, document)
+
+        try:
+            # 方法1: LibreOffice 转换为 docx
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = subprocess.run(
+                    ['libreoffice', '--headless', '--convert-to', 'docx',
+                     '--outdir', tmp_dir, file_path],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    import os
+                    docx_file = os.path.join(tmp_dir,
+                        os.path.basename(file_path).rsplit('.', 1)[0] + '.docx')
+                    if os.path.exists(docx_file):
+                        docs = self._load_docx_structured(docx_file, document)
+                        logger.info(f"成功通过 LibreOffice 转换并解析 .doc 文件")
+                        return docs
+        except FileNotFoundError:
+            logger.debug("LibreOffice 未安装")
+        except Exception as e:
+            logger.debug(f"LibreOffice 转换失败: {e}")
+
+        # 方法2: antiword 提取纯文本并推断标题
+        try:
+            result = subprocess.run(
+                ['antiword', '-w', '0', file_path],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                content = self._infer_headings_from_plain_text(result.stdout.strip())
+                logger.info(f"成功通过 antiword 解析 .doc 文件，内容长度: {len(content)}")
+                return [LangChainDocument(
+                    page_content=content,
+                    metadata={
+                        "source": document.title,
+                        "document_id": str(document.id),
+                        "document_type": document.document_type,
+                        "title": document.title,
+                        "file_path": file_path,
+                        "structured_parsing": False,
+                        "parse_method": "antiword",
+                    }
+                )]
+        except FileNotFoundError:
+            logger.debug("antiword 未安装")
+        except Exception as e:
+            logger.debug(f"antiword 失败: {e}")
+
+        raise ValueError(
+            "无法解析 .doc 文件。请安装 LibreOffice 以获得最佳效果：\n"
+            "Ubuntu/Debian: apt-get install libreoffice\n"
+            "或者将文件另存为 .docx 格式后重新上传"
+        )
+
+    def _convert_paragraph_to_markdown(self, paragraph) -> str:
+        """将 Word 段落转换为 Markdown 格式"""
+        text = paragraph.text.strip()
+        if not text:
+            return ""
+
+        style_name = paragraph.style.name if paragraph.style else ""
+
+        # 根据样式转换为 Markdown 标题
+        heading_map = {
+            'heading 1': '# ', 'heading 2': '## ', 'heading 3': '### ',
+            'heading 4': '#### ', 'heading 5': '##### ', 'heading 6': '###### ',
+        }
+
+        for style_key, prefix in heading_map.items():
+            if style_key in style_name.lower():
+                return f"{prefix}{text}"
+
+        return text
+
+    def _extract_table_content(self, table, depth=0) -> str:
+        """提取表格内容为 Markdown 格式，支持合并单元格"""
+        try:
+            # 获取表格的实际行列数
+            row_count = len(table.rows)
+            if row_count == 0:
+                return ""
+
+            # 优先用 table.columns 获取列数（更稳定），失败时回退到行 cells 的最大长度
+            try:
+                max_cols = len(table.columns)
+            except Exception:
+                max_cols = max((len(row.cells) for row in table.rows), default=0)
+            if max_cols == 0:
+                return ""
+
+            # 构建单元格网格，用于处理合并单元格
+            # grid[row][col] = (cell_text, is_merged_continuation)
+            grid = [[("", False) for _ in range(max_cols)] for _ in range(row_count)]
+
+            def _sanitize_cell_text(text: str) -> str:
+                """清理单元格文本，转义 Markdown 特殊字符"""
+                text = (text or "").replace("\r", " ").replace("\n", " ").replace("\t", " ")
+                text = " ".join(text.split())  # 合并多个空格
+                return text.replace("|", "\\|")  # 转义管道符
+
+            for row_idx, row in enumerate(table.rows):
+                # 记录当前行已处理的单元格（用于检测水平合并：同一行中重复引用同一 tc）
+                processed_cells_in_row = set()
+
+                for col_idx, cell in enumerate(row.cells):
+                    if col_idx >= max_cols:
+                        break
+
+                    # 获取单元格的唯一标识
+                    cell_id = id(cell._tc)
+
+                    # 检测垂直合并
+                    # Word 中 <w:vMerge/> 无 val 属性时通常表示"继续合并"
+                    try:
+                        tcPr = cell._tc.tcPr
+                        v_merge = tcPr.vMerge if tcPr is not None else None
+                        v_merge_val = getattr(v_merge, "val", None) if v_merge is not None else None
+
+                        if v_merge is None:
+                            is_v_merge_continue = False
+                        elif v_merge_val == "restart":
+                            is_v_merge_continue = False
+                        elif v_merge_val == "continue":
+                            is_v_merge_continue = True
+                        else:
+                            # val 为 None 时，通过检查上一行是否有 vMerge 来判断
+                            if row_idx == 0:
+                                is_v_merge_continue = False
+                            else:
+                                try:
+                                    prev_cell = table.rows[row_idx - 1].cells[col_idx]
+                                    prev_tcPr = prev_cell._tc.tcPr
+                                    prev_v_merge = prev_tcPr.vMerge if prev_tcPr is not None else None
+                                    is_v_merge_continue = prev_v_merge is not None
+                                except Exception:
+                                    is_v_merge_continue = False
+                    except Exception:
+                        is_v_merge_continue = False
+
+                    # 垂直合并继续：标记为已合并
+                    if is_v_merge_continue:
+                        grid[row_idx][col_idx] = ("", True)
+                        continue
+
+                    # 水平合并继续：同一行中重复引用同一 tc
+                    if cell_id in processed_cells_in_row:
+                        grid[row_idx][col_idx] = ("", True)
+                        continue
+
+                    # 提取单元格内容
+                    nested_tables = cell.tables
+                    if nested_tables and depth < 3:
+                        cell_text_parts = [p.text.strip() for p in cell.paragraphs if p.text.strip()]
+                        for nested_table in nested_tables:
+                            nested_content = self._extract_table_content(nested_table, depth + 1)
+                            if nested_content:
+                                cell_text_parts.append(f"[嵌套表格] {nested_content}")
+                        cell_text = _sanitize_cell_text(" ".join(cell_text_parts))
+                    else:
+                        cell_text = _sanitize_cell_text(cell.text.strip())
+
+                    # 填充网格
+                    grid[row_idx][col_idx] = (cell_text, False)
+                    processed_cells_in_row.add(cell_id)
+
+            # 生成 Markdown 表格
+            table_rows = []
+            for row_idx in range(row_count):
+                row_cells = [grid[row_idx][col_idx][0] for col_idx in range(max_cols)]
+
+                # 跳过全空行
+                if not any(cell.strip() for cell in row_cells):
+                    continue
+
+                table_rows.append(" | ".join(row_cells))
+
+                # 第一行后添加分隔符
+                if len(table_rows) == 1:
+                    separator = " | ".join(["---"] * max_cols)
+                    table_rows.append(separator)
+
+            if table_rows:
+                return "\n".join(table_rows)
+            return ""
+
+        except Exception as e:
+            logger.warning(f"表格提取失败: {e}")
+            return ""
+
+    def _infer_headings_from_plain_text(self, content: str) -> str:
+        """从纯文本推断标题结构"""
+        import re
+
+        lines = content.split('\n')
+        result_lines = []
+
+        # 常见标题模式
+        patterns = [
+            (r'^第[一二三四五六七八九十百]+[章节部分]\s*', 1),
+            (r'^[一二三四五六七八九十]+[、.．]\s*', 2),
+            (r'^[（\(][一二三四五六七八九十]+[）\)]\s*', 3),
+            (r'^(\d+)\s*[、.．]\s*', 2),
+            (r'^(\d+\.\d+)\s+', 3),
+            (r'^(\d+\.\d+\.\d+)\s+', 4),
+        ]
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                result_lines.append('')
+                continue
+
+            matched = False
+            for pattern, level in patterns:
+                if re.match(pattern, stripped) and len(stripped) <= 80:
+                    prefix = '#' * level + ' '
+                    result_lines.append(prefix + stripped)
+                    matched = True
+                    break
+
+            if not matched:
+                result_lines.append(line)
+
+        return '\n'.join(result_lines)
+
+    def _load_excel_structured(self, file_path: str, document: Document) -> List[LangChainDocument]:
+        """解析 Excel 文件（.xlsx/.xls），将每个工作表转换为 Markdown 表格"""
+        try:
+            import pandas as pd
+
+            # 读取所有工作表
+            excel_file = pd.ExcelFile(file_path)
+            sheet_names = excel_file.sheet_names
+
+            logger.info(f"开始解析 Excel 文件，工作表数量: {len(sheet_names)}")
+
+            content_parts = []
+            total_rows = 0
+
+            for sheet_name in sheet_names:
+                try:
+                    # 读取工作表，保留所有数据
+                    df = pd.read_excel(excel_file, sheet_name=sheet_name, dtype=str)
+                    df = df.fillna('')  # 空值替换为空字符串
+
+                    if df.empty:
+                        continue
+
+                    total_rows += len(df)
+
+                    # 生成工作表标题
+                    content_parts.append(f"## {sheet_name}")
+
+                    # 转换为 Markdown 表格
+                    markdown_table = self._dataframe_to_markdown(df)
+                    if markdown_table:
+                        content_parts.append(markdown_table)
+
+                except Exception as e:
+                    logger.warning(f"解析工作表 '{sheet_name}' 失败: {e}")
+                    continue
+
+            content = '\n\n'.join(content_parts)
+            logger.info(f"Excel 解析完成 - 工作表: {len(sheet_names)}, 总行数: {total_rows}, 内容长度: {len(content)}")
+
+            return [LangChainDocument(
+                page_content=content,
+                metadata={
+                    "source": document.title,
+                    "document_id": str(document.id),
+                    "document_type": document.document_type,
+                    "title": document.title,
+                    "file_path": file_path,
+                    "structured_parsing": True,
+                    "sheet_count": len(sheet_names),
+                    "total_rows": total_rows,
+                }
+            )]
+
+        except ImportError:
+            raise ValueError("需要安装 pandas 和 openpyxl: pip install pandas openpyxl xlrd")
+        except Exception as e:
+            logger.error(f"Excel 解析失败: {e}")
+            raise ValueError(f"无法解析 Excel 文件: {e}")
+
+    def _dataframe_to_markdown(self, df) -> str:
+        """将 DataFrame 转换为 Markdown 表格"""
+        if df.empty:
+            return ""
+
+        def _sanitize(text):
+            """清理单元格文本"""
+            text = str(text).replace('\r', ' ').replace('\n', ' ').replace('\t', ' ')
+            text = ' '.join(text.split())
+            return text.replace('|', '\\|')
+
+        # 表头
+        headers = [_sanitize(col) for col in df.columns]
+        header_row = ' | '.join(headers)
+        separator = ' | '.join(['---'] * len(headers))
+
+        # 数据行
+        data_rows = []
+        for _, row in df.iterrows():
+            cells = [_sanitize(cell) for cell in row]
+            data_rows.append(' | '.join(cells))
+
+        # 组合表格
+        table_parts = [header_row, separator] + data_rows
+        return '\n'.join(table_parts)
+
 
 class VectorStoreManager:
-    """向量存储管理器 - 支持稠密+稀疏混合检索"""
+    """向量存储管理器 - 支持稠密+稀疏混合检索 + Reranker精排"""
 
     # 向量名称常量
     DENSE_VECTOR_NAME = "dense"
     SPARSE_VECTOR_NAME = "bm25"
     # RRF 融合参数
     RRF_K = 60
+    # Reranker 配置
+    RERANKER_MODEL = "bge-reranker-v2-m3"
+    RERANKER_ENABLED = True  # 可通过环境变量控制
 
     # 类级别的缓存
     _vector_store_cache = {}
     _embeddings_cache = {}
     _sparse_encoder_cache = {}
+    _reranker_config_cache = None
+    _reranker_config_cache_time = 0
     _global_config_cache = None
     _global_config_cache_time = 0
 
@@ -389,6 +793,8 @@ class VectorStoreManager:
                     self._embeddings_cache[cache_key] = self._create_azure_embeddings(config)
                 elif embedding_service == 'ollama':
                     self._embeddings_cache[cache_key] = self._create_ollama_embeddings(config)
+                elif embedding_service == 'xinference':
+                    self._embeddings_cache[cache_key] = self._create_xinference_embeddings(config)
                 elif embedding_service == 'custom':
                     self._embeddings_cache[cache_key] = self._create_custom_api_embeddings(config)
                 else:
@@ -460,26 +866,134 @@ class VectorStoreManager:
             
         logger.info(f"🚀 初始化Azure OpenAI嵌入模型: {kwargs['model']}")
         return AzureOpenAIEmbeddings(**kwargs)
-    
+
     def _create_ollama_embeddings(self, config):
         """创建Ollama Embeddings实例"""
         try:
             from langchain_ollama import OllamaEmbeddings
         except ImportError:
             raise ImportError("需要安装langchain-ollama: pip install langchain-ollama")
-        
+
         kwargs = {
-            'model': config.model_name or 'nomic-embed-text',
+            'model': config.model_name or 'bge-m3',
         }
-        
+
         if config.api_base_url:
             kwargs['base_url'] = config.api_base_url
         else:
             kwargs['base_url'] = 'http://localhost:11434'
-            
+
         logger.info(f"🚀 初始化Ollama嵌入模型: {kwargs['model']}")
         return OllamaEmbeddings(**kwargs)
-    
+
+    def _create_xinference_embeddings(self, config):
+        """创建Xinference Embeddings实例"""
+        if not config.api_base_url:
+            base_url = 'http://localhost:9997'
+        else:
+            base_url = config.api_base_url.rstrip('/')
+
+        logger.info(f"🚀 初始化Xinference嵌入模型: {config.model_name or 'bge-m3'}")
+        return CustomAPIEmbeddings(
+            api_base_url=f"{base_url}/v1/embeddings",
+            api_key=config.api_key or '',
+            custom_headers={},
+            model_name=config.model_name or 'bge-m3'
+        )
+
+    def _get_reranker_config(self) -> tuple:
+        """获取 Reranker 配置（独立于 Embedding）"""
+        config = self.global_config
+
+        # 检查是否启用 Reranker
+        reranker_service = getattr(config, 'reranker_service', 'none')
+        if reranker_service == 'none':
+            return None, None
+
+        # 获取 Reranker API 地址
+        reranker_api_url = getattr(config, 'reranker_api_url', None)
+        if not reranker_api_url:
+            # 如果未配置独立地址，尝试使用 Embedding 服务地址（仅限 Xinference）
+            if config.embedding_service == 'xinference' and config.api_base_url:
+                reranker_api_url = config.api_base_url
+            elif reranker_service == 'xinference':
+                reranker_api_url = 'http://localhost:9997'
+            else:
+                return None, None
+
+        # 获取模型名称
+        reranker_model = getattr(config, 'reranker_model_name', 'bge-reranker-v2-m3')
+
+        base_url = reranker_api_url.rstrip('/')
+        return f"{base_url}/v1/rerank", reranker_model
+
+    def _get_reranker_url(self) -> Optional[str]:
+        """获取 Reranker 服务地址（带缓存，跟随全局配置缓存过期）"""
+        url, _ = self._get_reranker_config()
+        return url
+
+    def _get_reranker_model(self) -> str:
+        """获取 Reranker 模型名称"""
+        _, model = self._get_reranker_config()
+        return model or self.RERANKER_MODEL
+
+    def _rerank(self, query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        """使用 Reranker 对候选结果进行精排"""
+        reranker_url = self._get_reranker_url()
+        reranker_model = self._get_reranker_model()
+        if not reranker_url or not candidates:
+            return candidates[:top_k]
+
+        try:
+            import requests as http_requests
+
+            # 准备文档列表
+            documents = [c.get("payload", {}).get("page_content", "") for c in candidates]
+            if not any(documents):
+                return candidates[:top_k]
+
+            # 调用 Reranker API
+            logger.info(f"🔄 Reranker 请求: URL={reranker_url}, model={reranker_model}, docs={len(documents)}")
+            response = http_requests.post(
+                reranker_url,
+                json={
+                    "model": reranker_model,
+                    "query": query,
+                    "documents": documents,
+                    "top_n": top_k
+                },
+                timeout=30
+            )
+
+            if not response.ok:
+                logger.warning(f"⚠️ Reranker 调用失败: HTTP {response.status_code} - {response.text[:200]}, 降级为 RRF 排序")
+                return candidates[:top_k]
+
+            rerank_result = response.json()
+            results = rerank_result.get("results", [])
+            logger.info(f"🔄 Reranker 原始返回: {len(results)} 条, 分数范围: {[r.get('relevance_score', 0) for r in results[:3]]}")
+
+            if not results:
+                logger.warning("⚠️ Reranker 返回空结果，降级为 RRF 排序")
+                return candidates[:top_k]
+
+            # 根据 rerank 结果重新排序
+            reranked = []
+            for item in results:
+                idx = item.get("index", 0)
+                rerank_score = item.get("relevance_score", 0.0)
+                if 0 <= idx < len(candidates):
+                    candidate = candidates[idx].copy()
+                    candidate["rerank_score"] = rerank_score
+                    reranked.append(candidate)
+
+            logger.info(f"🎯 Reranker 精排完成: {len(reranked)} 条结果")
+            return reranked
+
+        except Exception as e:
+            logger.warning(f"⚠️ Reranker 调用异常: {e}, 降级为 RRF 排序")
+            return candidates[:top_k]
+
     def _create_custom_api_embeddings(self, config):
         """创建自定义API Embeddings实例"""
         if not config.api_base_url:
@@ -508,7 +1022,10 @@ class VectorStoreManager:
         elif embedding_type == "OllamaEmbeddings":
             logger.info(f"   🎉 说明: 使用Ollama本地API嵌入服务")
         elif embedding_type == "CustomAPIEmbeddings":
-            logger.info(f"   🎉 说明: 使用自定义HTTP API嵌入服务")
+            if config.embedding_service == 'xinference':
+                logger.info(f"   🎉 说明: 使用Xinference嵌入服务（支持Reranker）")
+            else:
+                logger.info(f"   🎉 说明: 使用自定义HTTP API嵌入服务")
 
         self._vector_store = None
         self._qdrant_client = None
@@ -796,17 +1313,19 @@ class VectorStoreManager:
             raise
 
     def _hybrid_similarity_search(self, query: str, k: int, score_threshold: float) -> List[Dict[str, Any]]:
-        """混合检索（RRF 融合稠密+稀疏）"""
+        """混合检索（RRF 融合稠密+稀疏 + Reranker 精排）"""
         try:
             collection_name = self._get_collection_name()
-            per_source_limit = max(k * 3, 10)  # 每种检索方式多取一些候选
-            
+            # Reranker 需要更多候选，增加召回量
+            reranker_enabled = self._get_reranker_url() is not None
+            per_source_limit = max(k * 5, 20) if reranker_enabled else max(k * 3, 10)
+
             # 计算稠密向量
             dense_vector = self.embeddings.embed_query(query)
-            
+
             # 计算稀疏向量
             sparse_query = self.sparse_encoder.encode_query(query)
-            
+
             # 稠密向量检索
             dense_results = self.qdrant_client.search(
                 collection_name=collection_name,
@@ -817,7 +1336,7 @@ class VectorStoreManager:
                 limit=per_source_limit,
                 with_payload=True,
             )
-            
+
             # 稀疏向量检索
             sparse_results = []
             if sparse_query:
@@ -833,12 +1352,18 @@ class VectorStoreManager:
                     limit=per_source_limit,
                     with_payload=True,
                 )
-            
+
             logger.info(f"🔍 稠密候选: {len(dense_results)}, 稀疏候选: {len(sparse_results)}")
-            
-            # RRF 融合
-            fused_results = self._rrf_fusion(dense_results, sparse_results, k)
-            
+
+            # RRF 融合（取更多候选用于 Reranker）
+            fusion_limit = k * 3 if reranker_enabled else k
+            fused_results = self._rrf_fusion(dense_results, sparse_results, fusion_limit)
+
+            # Reranker 精排（仅 Xinference 支持）
+            if reranker_enabled and fused_results:
+                logger.info(f"🎯 启用 Reranker 精排...")
+                fused_results = self._rerank(query, fused_results, k)
+
             return self._format_fused_results(fused_results, score_threshold)
             
         except Exception as e:
@@ -927,21 +1452,24 @@ class VectorStoreManager:
         return formatted_results
 
     def _format_fused_results(self, fused_results: List[Dict], score_threshold: float) -> List[Dict[str, Any]]:
-        """格式化 RRF 融合结果"""
+        """格式化 RRF 融合结果（支持 Reranker 分数）"""
         formatted_results = []
-        
+
         for i, entry in enumerate(fused_results):
-            score = entry["score"]
+            # 优先使用 rerank_score，否则使用 RRF score
+            rerank_score = entry.get("rerank_score")
+            score = rerank_score if rerank_score is not None else entry.get("score", 0)
+
             if score < score_threshold:
                 continue
-            
+
             payload = entry.get("payload", {})
             content = payload.get("page_content", "")
-            
+
             # 添加融合来源信息
             labels = entry.get("labels", {})
             original_scores = entry.get("original_scores", {})
-            
+
             result = {
                 'content': content,
                 'metadata': payload,
@@ -950,24 +1478,30 @@ class VectorStoreManager:
                     'sources': list(labels.keys()),
                     'dense_score': original_scores.get("dense"),
                     'sparse_score': original_scores.get("sparse"),
+                    'rerank_score': rerank_score,
                 }
             }
             formatted_results.append(result)
-            
+
             source = payload.get('source', '未知来源')
             sources_str = "+".join(labels.keys())
-            logger.info(f"   📄 结果{i+1}: 融合分={score:.4f} ({score*100:.1f}%), 来源={source}, 检索源=[{sources_str}]")
-        
+            if rerank_score is not None:
+                logger.info(f"   📄 结果{i+1}: Rerank分={rerank_score:.4f}, 来源={source}")
+            else:
+                logger.info(f"   📄 结果{i+1}: 融合分={score:.4f} ({score*100:.1f}%), 来源={source}, 检索源=[{sources_str}]")
+
         # 如果没有满足阈值的结果，返回最佳结果
         if not formatted_results and fused_results:
             best = fused_results[0]
             payload = best.get("payload", {})
+            rerank_score = best.get("rerank_score")
+            score = rerank_score if rerank_score is not None else best.get("score", 0)
             formatted_results.append({
                 'content': payload.get("page_content", ""),
                 'metadata': payload,
-                'similarity_score': float(best["score"]),
+                'similarity_score': float(score),
             })
-        
+
         logger.info(f"📊 过滤后结果数量: {len(formatted_results)}")
         return formatted_results
 

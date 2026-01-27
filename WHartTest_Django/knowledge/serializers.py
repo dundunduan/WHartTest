@@ -8,12 +8,15 @@ class KnowledgeGlobalConfigSerializer(serializers.ModelSerializer):
     """知识库全局配置序列化器"""
     updated_by_name = serializers.CharField(source='updated_by.username', read_only=True)
     embedding_service_display = serializers.CharField(source='get_embedding_service_display', read_only=True)
+    reranker_service_display = serializers.CharField(source='get_reranker_service_display', read_only=True)
 
     class Meta:
         model = KnowledgeGlobalConfig
         fields = [
             'embedding_service', 'embedding_service_display',
             'api_base_url', 'api_key', 'model_name',
+            'reranker_service', 'reranker_service_display',
+            'reranker_api_url', 'reranker_api_key', 'reranker_model_name',
             'chunk_size', 'chunk_overlap',
             'updated_at', 'updated_by', 'updated_by_name'
         ]
@@ -101,13 +104,22 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
         url = data.get('url')
         content = data.get('content')
 
+        # 需要上传文件的文档类型
+        file_required_types = ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx']
+        # 可以直接输入内容的文档类型
+        text_types = ['txt', 'md']
+
         if document_type == 'url':
             if not url:
                 raise serializers.ValidationError("网页链接类型必须提供URL")
-        elif document_type in ['txt', 'md']:
+        elif document_type in text_types:
             if not content and not file:
                 raise serializers.ValidationError("文本类型文档必须提供内容或文件")
+        elif document_type in file_required_types:
+            if not file:
+                raise serializers.ValidationError("此文档类型必须上传文件")
         else:
+            # 其他未知类型也要求上传文件
             if not file:
                 raise serializers.ValidationError("此文档类型必须上传文件")
 

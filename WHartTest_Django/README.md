@@ -228,6 +228,12 @@ openai # OpenAI官方SDK
 - Pip (包管理器)
 - Git (版本控制)
 
+### 系统依赖（Linux/Ubuntu）
+```bash
+# 旧版Word文档(.doc)解析支持
+sudo apt-get install antiword catdoc
+```
+
 ### 安装步骤
 
 1. **克隆项目**

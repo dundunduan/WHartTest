@@ -163,8 +163,8 @@ const columns = [
     width: 100,
     align: 'center' as const,
   },
-  { title: '创建时间', dataIndex: 'created_at', slotName: 'created_at', width: 150, align: 'center' as const },
-  { title: '操作', slotName: 'operations', width: 230, fixed: 'right' as const, align: 'center' as const },
+  { title: '创建时间', dataIndex: 'created_at', slotName: 'created_at', width: 180, align: 'center' as const },
+  { title: '操作', slotName: 'operations', width: 280, fixed: 'right' as const, align: 'center' as const },
 ];
 
 // 获取测试套件列表

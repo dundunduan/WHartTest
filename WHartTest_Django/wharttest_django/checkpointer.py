@@ -189,7 +189,7 @@ def check_history_exists() -> bool:
 def get_thread_ids_by_prefix(prefix: str) -> list:
     """
     根据前缀查询所有匹配的 thread_id
-    
+
     返回 thread_id 列表
     """
     if get_database_type() == 'postgres':
@@ -222,3 +222,210 @@ def get_thread_ids_by_prefix(prefix: str) -> list:
             return [row[0] for row in rows]
         finally:
             conn.close()
+
+
+def rollback_checkpoints_to_count(thread_id: str, keep_count: int) -> int:
+    """
+    回滚对话历史，只保留前 keep_count 条消息
+
+    LangGraph PostgreSQL 的存储结构：
+    - checkpoints 表：存储 checkpoint 元数据，channel_versions.messages 指向 blob 版本
+    - checkpoint_blobs 表：存储实际的消息数据（msgpack 格式）
+
+    回滚策略：找到消息数量 <= keep_count 的最近版本，删除之后的版本
+
+    参数:
+        thread_id: 会话线程ID
+        keep_count: 要保留的消息数量
+
+    返回:
+        删除的消息数量
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if keep_count < 0:
+        keep_count = 0
+
+    try:
+        # 使用 LangGraph 的官方 API 获取 checkpoints
+        with get_sync_checkpointer() as checkpointer:
+            config = {"configurable": {"thread_id": thread_id}}
+            checkpoints = list(checkpointer.list(config))
+
+            if not checkpoints:
+                logger.warning(f"[rollback] No checkpoints found for thread_id={thread_id}")
+                return 0
+
+            # 获取最新 checkpoint 的消息数量
+            latest = checkpoints[0]
+            latest_checkpoint = latest.checkpoint
+
+            if not latest_checkpoint or 'channel_values' not in latest_checkpoint:
+                logger.warning(f"[rollback] Latest checkpoint has no channel_values")
+                return 0
+
+            messages = latest_checkpoint.get('channel_values', {}).get('messages', [])
+            original_count = len(messages)
+            logger.info(f"[rollback] thread_id={thread_id}, original_count={original_count}, keep_count={keep_count}")
+
+            if original_count <= keep_count:
+                logger.info(f"[rollback] No need to truncate, original_count({original_count}) <= keep_count({keep_count})")
+                return 0
+
+            # 查找消息数量 <= keep_count 的最近 checkpoint
+            target_checkpoint = None
+            for cp in checkpoints:
+                cp_data = cp.checkpoint
+                if cp_data and 'channel_values' in cp_data:
+                    cp_messages = cp_data.get('channel_values', {}).get('messages', [])
+                    cp_msg_count = len(cp_messages)
+                    # 只有当消息数量刚好等于 keep_count 时才使用该 checkpoint
+                    # 否则需要通过修改 blob 来精确截断
+                    if cp_msg_count == keep_count:
+                        target_checkpoint = cp
+                        break
+
+            if not target_checkpoint:
+                # 没有找到完全匹配的 checkpoint，需要直接操作数据库来精确截断
+                logger.info(f"[rollback] No exact checkpoint found for keep_count={keep_count}, modifying blobs directly")
+                return _rollback_by_modifying_blobs(thread_id, keep_count, original_count, logger)
+
+            # 找到了目标 checkpoint，删除它之后的所有 checkpoints
+            target_config = target_checkpoint.config
+            target_checkpoint_id = target_config.get('configurable', {}).get('checkpoint_id')
+            logger.info(f"[rollback] Found target checkpoint: {target_checkpoint_id}")
+
+            # 使用数据库操作删除目标之后的 checkpoints
+            deleted = _delete_checkpoints_after(thread_id, target_checkpoint_id, logger)
+
+            return original_count - len(target_checkpoint.checkpoint.get('channel_values', {}).get('messages', []))
+
+    except Exception as e:
+        logger.error(f"[rollback] Error: {e}", exc_info=True)
+        return 0
+
+
+def _rollback_by_modifying_blobs(thread_id: str, keep_count: int, original_count: int, logger) -> int:
+    """
+    通过修改 checkpoint_blobs 来回滚消息
+    当没有合适的历史 checkpoint 时使用此方法
+    """
+    if get_database_type() == 'postgres':
+        import psycopg2
+        conn_string = get_db_connection_string()
+
+        # 先获取 serde（需要在 checkpointer 上下文中）
+        with get_sync_checkpointer() as checkpointer:
+            serde = checkpointer.serde
+
+        try:
+            conn = psycopg2.connect(conn_string)
+            try:
+                cursor = conn.cursor()
+
+                # 获取最新的 messages blob（包括 type 列）
+                cursor.execute("""
+                    SELECT version, type, blob
+                    FROM checkpoint_blobs
+                    WHERE thread_id = %s AND channel = 'messages'
+                    ORDER BY version DESC
+                    LIMIT 1
+                """, (thread_id,))
+                row = cursor.fetchone()
+
+                if not row:
+                    logger.warning(f"[rollback] No messages blob found")
+                    return 0
+
+                version, blob_type, blob = row
+                if isinstance(blob, memoryview):
+                    blob = bytes(blob)
+
+                # 使用 LangGraph 的序列化器解析
+                messages = serde.loads_typed((blob_type, blob))
+                logger.info(f"[rollback] Parsed {len(messages)} messages from blob")
+
+                if len(messages) <= keep_count:
+                    return 0
+
+                # 截断消息
+                truncated_messages = messages[:keep_count]
+
+                # 重新序列化
+                new_blob_type, new_blob = serde.dumps_typed(truncated_messages)
+                logger.info(f"[rollback] Re-serialized to {len(truncated_messages)} messages, blob_type={new_blob_type}")
+
+                # 更新 blob
+                cursor.execute("""
+                    UPDATE checkpoint_blobs
+                    SET blob = %s, type = %s
+                    WHERE thread_id = %s AND channel = 'messages' AND version = %s
+                """, (new_blob, new_blob_type, thread_id, version))
+
+                # 删除其他版本的 messages blobs
+                cursor.execute("""
+                    DELETE FROM checkpoint_blobs
+                    WHERE thread_id = %s AND channel = 'messages' AND version != %s
+                """, (thread_id, version))
+
+                # 只保留最新的 checkpoint
+                cursor.execute("""
+                    DELETE FROM checkpoints
+                    WHERE thread_id = %s
+                    AND checkpoint_id NOT IN (
+                        SELECT checkpoint_id FROM checkpoints
+                        WHERE thread_id = %s
+                        ORDER BY checkpoint_id DESC
+                        LIMIT 1
+                    )
+                """, (thread_id, thread_id))
+
+                conn.commit()
+                deleted_count = original_count - keep_count
+                logger.info(f"[rollback] Successfully truncated messages, deleted {deleted_count}")
+                return deleted_count
+
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"[rollback] _rollback_by_modifying_blobs error: {e}", exc_info=True)
+            return 0
+    else:
+        # SQLite 版本暂不支持
+        logger.warning("[rollback] SQLite blob modification not implemented")
+        return 0
+
+
+def _delete_checkpoints_after(thread_id: str, keep_checkpoint_id: str, logger) -> int:
+    """删除指定 checkpoint 之后的所有 checkpoints"""
+    if get_database_type() == 'postgres':
+        import psycopg2
+        conn_string = get_db_connection_string()
+
+        try:
+            conn = psycopg2.connect(conn_string)
+            try:
+                cursor = conn.cursor()
+
+                # 删除比目标 checkpoint 更新的 checkpoints
+                cursor.execute("""
+                    DELETE FROM checkpoints
+                    WHERE thread_id = %s AND checkpoint_id > %s
+                """, (thread_id, keep_checkpoint_id))
+                deleted = cursor.rowcount
+
+                # 删除对应的 blobs (根据 checkpoints 中的 channel_versions)
+                # 由于 blobs 可能被多个 checkpoints 引用，这里简单起见不删除
+
+                conn.commit()
+                logger.info(f"[rollback] Deleted {deleted} checkpoints after {keep_checkpoint_id}")
+                return deleted
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"[rollback] _delete_checkpoints_after error: {e}", exc_info=True)
+            return 0
+    else:
+        return 0

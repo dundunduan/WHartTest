@@ -1,8 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
-    RequirementDocument, RequirementModule, ReviewReport, 
-    ReviewIssue, ModuleReviewResult
+    RequirementDocument, RequirementModule, ReviewReport,
+    ReviewIssue, ModuleReviewResult, DocumentImage
 )
 
 
@@ -11,7 +11,7 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
     uploader_name = serializers.CharField(source='uploader.username', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
     modules_count = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = RequirementDocument
         fields = [
@@ -19,10 +19,10 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
             'status', 'version', 'is_latest', 'parent_document',
             'uploader', 'uploader_name', 'project', 'project_name',
             'uploaded_at', 'updated_at', 'word_count', 'page_count',
-            'modules_count'
+            'has_images', 'image_count', 'modules_count'
         ]
         read_only_fields = ['id', 'uploader', 'uploaded_at', 'updated_at']
-    
+
     def get_modules_count(self, obj):
         """获取模块数量"""
         return obj.modules.count()
@@ -30,15 +30,27 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
 
 class RequirementDocumentUploadSerializer(serializers.ModelSerializer):
     """需求文档上传序列化器"""
-    
+
+    SUPPORTED_EXTENSIONS = {'txt', 'md', 'pdf', 'doc', 'docx'}
+
     class Meta:
         model = RequirementDocument
         fields = [
             'id', 'title', 'description', 'document_type', 'file', 'content', 'project',
-            'status', 'word_count', 'uploaded_at'
+            'status', 'word_count', 'has_images', 'image_count', 'uploaded_at'
         ]
-        read_only_fields = ['id', 'status', 'word_count', 'uploaded_at']
-    
+        read_only_fields = ['id', 'status', 'word_count', 'has_images', 'image_count', 'uploaded_at']
+
+    def validate_file(self, value):
+        """验证文件格式"""
+        if value:
+            ext = value.name.lower().split('.')[-1] if '.' in value.name else ''
+            if ext not in self.SUPPORTED_EXTENSIONS:
+                raise serializers.ValidationError(
+                    f"不支持的文件格式: .{ext}。支持的格式: PDF、Word(.doc/.docx)、TXT、Markdown(.md)"
+                )
+        return value
+
     def validate(self, data):
         """验证文档内容"""
         if not data.get('file') and not data.get('content'):
@@ -119,18 +131,20 @@ class ReviewReportSerializer(serializers.ModelSerializer):
             'medium_priority_issues', 'low_priority_issues',
             'summary', 'recommendations', 'issues', 'module_results',
             'specialized_analyses', 'scores',  # 新增字段
+            'progress', 'current_step', 'completed_steps',  # 进度跟踪字段
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'review_date', 'created_at', 'updated_at']
     
     def get_scores(self, obj):
-        """获取5个专项分数"""
+        """获取6个专项分数"""
         return {
             'completeness': obj.completeness_score,
             'consistency': obj.consistency_score,
             'testability': obj.testability_score,
             'feasibility': obj.feasibility_score,
             'clarity': obj.clarity_score,
+            'logic': obj.logic_score,
         }
     
     def get_specialized_analyses(self, obj):
@@ -172,6 +186,13 @@ class ReviewReportSerializer(serializers.ModelSerializer):
             'clarity_analysis': {
                 'overall_score': obj.clarity_score,
                 'summary': f"清晰度评分: {obj.clarity_score}分",
+                'issues': [],
+                'strengths': [],
+                'recommendations': []
+            },
+            'logic_analysis': {
+                'overall_score': obj.logic_score,
+                'summary': f"逻辑分析评分: {obj.logic_score}分",
                 'issues': [],
                 'strengths': [],
                 'recommendations': []
@@ -225,7 +246,8 @@ class ModuleOperationSerializer(serializers.Serializer):
         ('reorder', '重新排序'),
         ('rename', '重命名'),
         ('delete', '删除'),
-        ('create', '创建新模块')
+        ('create', '创建新模块'),
+        ('update', '更新模块')
     ])
 
     # 操作目标

@@ -10,6 +10,23 @@
       </div>
       <div class="form-actions">
         <a-space>
+          <!-- 用例导航按钮（仅在编辑模式且有用例列表时显示） -->
+          <template v-if="isEditing && totalTestCases > 0">
+            <a-button-group>
+              <a-button :disabled="!hasPrevTestCase" @click="goToPrevTestCase">
+                <template #icon><icon-left /></template>
+                上一条
+              </a-button>
+              <a-button disabled class="nav-indicator">
+                {{ currentTestCaseIndex + 1 }} / {{ totalTestCases }}
+              </a-button>
+              <a-button :disabled="!hasNextTestCase" @click="goToNextTestCase">
+                下一条
+                <template #icon><icon-right /></template>
+              </a-button>
+            </a-button-group>
+            <a-divider direction="vertical" />
+          </template>
           <a-button @click="handleBackToList">取消</a-button>
           <a-button type="primary" :loading="formLoading" @click="handleSubmit">
             保存
@@ -31,7 +48,7 @@
             <a-input v-model="formState.name" placeholder="请输入用例名称" allow-clear />
           </a-form-item>
         </a-col>
-        <a-col :span="6">
+        <a-col :span="4">
           <a-form-item field="level" label="优先级">
             <a-select v-model="formState.level" placeholder="请选择优先级">
               <a-option value="P0">P0 - 最高</a-option>
@@ -41,7 +58,7 @@
             </a-select>
           </a-form-item>
         </a-col>
-        <a-col :span="6">
+        <a-col :span="4">
           <a-form-item field="module_id" label="所属模块">
             <a-tree-select
               v-model="formState.module_id"
@@ -51,6 +68,15 @@
               allow-search
               :dropdown-style="{ maxHeight: '300px', overflow: 'auto' }"
             />
+          </a-form-item>
+        </a-col>
+        <a-col :span="4" v-if="isEditing">
+          <a-form-item field="review_status" label="审核状态">
+            <a-select v-model="formState.review_status" placeholder="选择审核状态">
+              <a-option v-for="opt in REVIEW_STATUS_OPTIONS" :key="opt.value" :value="opt.value">
+                <a-tag :color="opt.color" size="small">{{ opt.label }}</a-tag>
+              </a-option>
+            </a-select>
           </a-form-item>
         </a-col>
       </a-row>      <a-form-item field="precondition" label="前置条件">
@@ -354,7 +380,8 @@ import {
   type CreateTestCaseRequest,
   type UpdateTestCaseRequest,
 } from '@/services/testcaseService';
-import { formatDate } from '@/utils/formatters';
+import { formatDate, REVIEW_STATUS_OPTIONS } from '@/utils/formatters';
+import type { ReviewStatus } from '@/services/testcaseService';
 
 interface StepWithError extends TestCaseStep {
   temp_id?: string; // 用于表格 row-key
@@ -365,6 +392,7 @@ interface FormState extends CreateTestCaseRequest {
   steps: StepWithError[];
   notes?: string;
   module_id?: number;
+  review_status?: ReviewStatus;
 }
 
 
@@ -374,14 +402,17 @@ const props = defineProps<{
   currentProjectId: number | null;
   initialSelectedModuleId?: number | null; // 用于新建时默认选中模块
   moduleTree: TreeNodeData[]; // 模块树数据
+  testCaseIds?: number[]; // 当前筛选后的用例ID列表（用于导航）
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'submitSuccess'): void;
+  (e: 'navigate', testCaseId: number): void; // 导航到指定用例
+  (e: 'reviewStatusChanged'): void; // 审核状态变更后通知父组件刷新
 }>();
 
-const { isEditing, testCaseId, currentProjectId, initialSelectedModuleId, moduleTree } = toRefs(props);
+const { isEditing, testCaseId, currentProjectId, initialSelectedModuleId, moduleTree, testCaseIds } = toRefs(props);
 
 const formLoading = ref(false);
 const testCaseFormRef = ref<FormInstance>();
@@ -393,6 +424,7 @@ const formState = reactive<FormState>({
   module_id: undefined,
   steps: [{ step_number: 1, description: '', expected_result: '', temp_id: Date.now().toString() }],
   notes: '',
+  review_status: 'pending_review',
 });
 
 // 保存原始数据用于变更追踪
@@ -420,6 +452,7 @@ const testCaseRules = {
     { maxLength: 500, message: '前置条件长度不能超过500个字符' },
   ],
   level: [{ required: true, message: '请选择优先级' }],
+  module_id: [{ required: true, message: '请选择所属模块' }],
   notes: [ // 备注字段的校验规则 (可选)
     { maxLength: 1000, message: '备注长度不能超过1000个字符' },
   ],
@@ -432,6 +465,40 @@ const newScreenshot = computed(() => {
   return newScreenshots.value.length > 0 ? newScreenshots.value[0] : null;
 });
 
+// 用例导航相关计算属性
+const currentTestCaseIndex = computed(() => {
+  if (!testCaseId?.value || !testCaseIds?.value?.length) return -1;
+  return testCaseIds.value.indexOf(testCaseId.value);
+});
+
+const hasPrevTestCase = computed(() => {
+  return currentTestCaseIndex.value > 0;
+});
+
+const hasNextTestCase = computed(() => {
+  if (!testCaseIds?.value?.length) return false;
+  return currentTestCaseIndex.value >= 0 && currentTestCaseIndex.value < testCaseIds.value.length - 1;
+});
+
+const totalTestCases = computed(() => {
+  return testCaseIds?.value?.length || 0;
+});
+
+// 用例导航方法
+const goToPrevTestCase = () => {
+  if (hasPrevTestCase.value && testCaseIds?.value) {
+    const prevId = testCaseIds.value[currentTestCaseIndex.value - 1];
+    emit('navigate', prevId);
+  }
+};
+
+const goToNextTestCase = () => {
+  if (hasNextTestCase.value && testCaseIds?.value) {
+    const nextId = testCaseIds.value[currentTestCaseIndex.value + 1];
+    emit('navigate', nextId);
+  }
+};
+
 const resetForm = () => {
   formState.id = undefined;
   formState.name = '';
@@ -440,6 +507,7 @@ const resetForm = () => {
   formState.module_id = initialSelectedModuleId?.value || undefined;
   formState.steps = [{ step_number: 1, description: '', expected_result: '', temp_id: Date.now().toString() }];
   formState.notes = '';
+  formState.review_status = 'pending_review';
   stepErrors.value = [];
   existingScreenshots.value = [];
   newScreenshots.value = [];
@@ -459,9 +527,10 @@ const fetchDetailsAndSetForm = async (id: number) => {
       formState.level = data.level;
       formState.module_id = data.module_id;
       formState.notes = data.notes || ''; // 设置备注信息
+      formState.review_status = data.review_status || 'pending_review'; // 设置审核状态
       formState.steps = data.steps.map((step, index) => ({ ...step, temp_id: `${Date.now()}-${index}` }));
       stepErrors.value = Array(data.steps.length).fill({});
-      
+
       // 保存原始数据的深拷贝，用于后续比较变更
       originalFormData.value = JSON.parse(JSON.stringify({
         id: data.id,
@@ -470,6 +539,7 @@ const fetchDetailsAndSetForm = async (id: number) => {
         level: data.level,
         module_id: data.module_id,
         notes: data.notes || '',
+        review_status: data.review_status || 'pending_review',
         steps: data.steps
       }));
       
@@ -580,6 +650,7 @@ const handleSubmit = async () => {
       }));
 
     let response;
+    let reviewStatusChanged = false; // 标记审核状态是否变更
     if (isEditing.value && formState.id) {
       // 编辑模式：只发送变更的字段（PATCH 语义）
       const updatePayload: Partial<UpdateTestCaseRequest> = {};
@@ -601,7 +672,11 @@ const handleSubmit = async () => {
         if (formState.notes !== originalFormData.value.notes) {
           updatePayload.notes = formState.notes;
         }
-        
+        if (formState.review_status !== originalFormData.value.review_status) {
+          updatePayload.review_status = formState.review_status;
+          reviewStatusChanged = true; // 标记审核状态变更
+        }
+
         // 比较步骤：检查是否有变更
         // 将原始步骤数据标准化为与 payloadSteps 相同的格式后再比较
         const normalizedOriginalSteps = originalFormData.value.steps.map(s => ({
@@ -657,9 +732,19 @@ const handleSubmit = async () => {
       }
 
       Message.success(isEditing.value ? '测试用例更新成功' : '测试用例创建成功');
-      
-      // 无论编辑还是新建模式，保存成功后都返回列表页并刷新
-      emit('submitSuccess');
+
+      if (isEditing.value) {
+        // 编辑模式：保存后刷新当前数据，不返回列表
+        await fetchDetailsAndSetForm(formState.id!);
+        newScreenshots.value = []; // 清空新上传的截图
+        // 如果审核状态变更，通知父组件刷新导航列表
+        if (reviewStatusChanged) {
+          emit('reviewStatusChanged');
+        }
+      } else {
+        // 新建模式：返回列表页并刷新
+        emit('submitSuccess');
+      }
     } else {
       Message.error(response.error || (isEditing.value ? '更新失败' : '创建失败'));
     }
@@ -956,6 +1041,16 @@ const handleImageError = (_event: Event) => {
     display: flex;
     align-items: center;
   }
+}
+
+/* 导航指示器样式 */
+.nav-indicator {
+  cursor: default !important;
+  background-color: #f2f3f5 !important;
+  color: #1d2129 !important;
+  font-weight: 500;
+  min-width: 70px;
+  text-align: center;
 }
 
 .testcase-form {

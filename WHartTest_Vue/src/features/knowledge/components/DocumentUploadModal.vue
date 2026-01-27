@@ -36,7 +36,7 @@
             <input
               ref="fileInputRef"
               type="file"
-              accept=".pdf,.docx,.pptx,.txt,.md,.html,.htm"
+              accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.txt,.md,.html,.htm"
               style="display: none"
               @change="handleFileInputChange"
             />
@@ -45,7 +45,7 @@
               <div class="upload-text">
                 <div>点击选择文件</div>
                 <div class="upload-tip">
-                  支持 PDF、Word(.docx)、PPT(.pptx)、文本、Markdown、HTML 格式
+                  支持 PDF、Word、Excel、PPT、文本、Markdown、HTML 格式
                 </div>
               </div>
             </div>
@@ -211,7 +211,7 @@ const handleUploadTypeChange = () => {
 };
 
 // 支持的文件扩展名（与后端 DocumentLoader 支持的格式保持一致）
-const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'pptx', 'txt', 'md', 'html', 'htm'];
+const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'txt', 'md', 'html', 'htm'];
 
 const validateFileExtension = (file: File): boolean => {
   const ext = file.name.split('.').pop()?.toLowerCase() || '';
@@ -269,6 +269,9 @@ const getDocumentType = (uploadType: string, file?: File): DocumentType => {
     const typeMap: Record<string, DocumentType> = {
       'pdf': 'pdf',
       'docx': 'docx',
+      'doc': 'doc',
+      'xlsx': 'xlsx',
+      'xls': 'xls',
       'pptx': 'pptx',
       'txt': 'txt',
       'md': 'md',

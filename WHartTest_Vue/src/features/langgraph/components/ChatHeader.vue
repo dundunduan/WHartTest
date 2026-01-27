@@ -1,7 +1,6 @@
 <template>
   <div class="chat-header-container">
     <div class="chat-header">
-      <h1 class="chat-title">LLM对话</h1>
       <div class="chat-actions">
         <!-- ⭐大脑模式下隐藏流式开关 -->
         <div v-if="!brainMode" class="stream-toggle">
@@ -30,7 +29,7 @@
           <a-select
             v-model="selectedPromptId"
             :placeholder="defaultPrompt ? defaultPrompt.name : '选择提示词'"
-            style="width: 200px"
+            style="width: 160px"
             allow-clear
             @change="handlePromptChange"
             :loading="promptsLoading"
@@ -273,8 +272,10 @@ defineExpose({
 .chat-header {
   padding: 16px 20px;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .chat-title {
@@ -282,12 +283,56 @@ defineExpose({
   font-weight: 600;
   color: #1d2129;
   margin: 0;
+  flex-shrink: 0;
 }
 
 .chat-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .chat-header {
+    padding: 12px 16px;
+  }
+
+  .chat-actions {
+    gap: 6px;
+  }
+
+  .prompt-selector :deep(.arco-select) {
+    width: 150px !important;
+  }
+}
+
+@media (max-width: 1200px) {
+  .prompt-label {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .chat-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .chat-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .prompt-selector {
+    width: 100%;
+  }
+
+  .prompt-selector :deep(.arco-select) {
+    width: 100% !important;
+    flex: 1;
+  }
 }
 
 .stream-toggle,

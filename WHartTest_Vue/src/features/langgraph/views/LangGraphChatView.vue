@@ -40,6 +40,9 @@
         :messages="displayedMessages"
         :is-loading="isLoading && messages.length === 0"
         @toggle-expand="toggleExpand"
+        @quote="handleQuote"
+        @retry="handleRetry"
+        @delete="handleDeleteMessage"
       />
 
       <ChatInput
@@ -48,8 +51,11 @@
         :supports-vision="currentLlmConfig?.supports_vision || false"
         :context-token-count="contextTokenInfo.tokenCount"
         :context-limit="contextTokenInfo.limit"
+        :quoted-message="quotedMessage"
         v-model:brain-mode="isBrainMode"
         @send-message="handleSendMessage"
+        @clear-quote="handleClearQuote"
+        @stop-generation="handleStopGeneration"
       />
     </div>
 
@@ -73,11 +79,13 @@ import {
   sendChatMessageStream,
   getChatHistory,
   deleteChatHistory,
+  rollbackChatHistory,
   batchDeleteChatHistory,
   getChatSessions,
   activeStreams,
   clearStreamState,
-  latestContextUsage
+  latestContextUsage,
+  stopAgentLoop
 } from '@/features/langgraph/services/chatService';
 import { listLlmConfigs, partialUpdateLlmConfig } from '@/features/langgraph/services/llmConfigService';
 import { getUserPrompts } from '@/features/prompts/services/promptService';
@@ -156,6 +164,9 @@ const useKnowledgeBase = ref(false); // 是否启用知识库功能
 const selectedKnowledgeBaseId = ref<string | null>(null); // 选中的知识库ID
 const similarityThreshold = ref(0.3); // 相似度阈值
 const topK = ref(5); // 检索结果数量
+
+// 消息操作相关
+const quotedMessage = ref<ChatMessage | null>(null); // 引用的消息
 
 // 提示词相关
 const selectedPromptId = ref<number | null>(null); // 用户选择的提示词ID
@@ -297,6 +308,21 @@ const saveSessionsToStorage = () => {
   localStorage.setItem('langgraph_sessions', JSON.stringify(chatSessions.value));
 };
 
+// ⭐ 安全停止加载状态：只有在没有正在进行的流时才设置 isLoading = false
+const safeStopLoading = () => {
+  const id = sessionId.value;
+  // 检查普通聊天流
+  const stream = id ? activeStreams.value[id] : null;
+  const hasActiveStream = stream && !stream.isComplete;
+  // 检查 Brain 模式流
+  const orchestratorStream = id ? activeOrchestratorStreams.value[id] : null;
+  const hasActiveOrchestratorStream = orchestratorStream && !orchestratorStream.isComplete;
+
+  if (!hasActiveStream && !hasActiveOrchestratorStream) {
+    isLoading.value = false;
+  }
+};
+
 // 从服务器加载会话列表
 const loadSessionsFromServer = async () => {
   if (!projectStore.currentProjectId) {
@@ -351,7 +377,7 @@ const loadSessionsFromServer = async () => {
     console.error('获取会话列表失败:', error);
     Message.error('获取会话列表失败，请稍后重试');
   } finally {
-    isLoading.value = false;
+    safeStopLoading();
   }
 };
 
@@ -501,7 +527,7 @@ const loadChatHistory = async () => {
     localStorage.removeItem('langgraph_session_id');
     sessionId.value = '';
   } finally {
-    isLoading.value = false;
+    safeStopLoading();
   }
 };
 
@@ -724,6 +750,192 @@ const toggleExpand = (message: ChatMessage) => {
   }
 };
 
+// 处理引用消息
+const handleQuote = (message: ChatMessage) => {
+  quotedMessage.value = message;
+};
+
+// 清除引用
+const handleClearQuote = () => {
+  quotedMessage.value = null;
+};
+
+// 停止生成
+const handleStopGeneration = async () => {
+  // 1. 先中断前端 SSE 连接
+  if (abortController) {
+    abortController.abort();
+  }
+
+  // 2. 调用后端停止 API（真正停止 LLM 调用）
+  if (sessionId.value) {
+    try {
+      const result = await stopAgentLoop(sessionId.value);
+      if (result.status === 'success') {
+        console.log('[LangGraphChatView] Backend stop signal sent:', result.data);
+      } else {
+        console.warn('[LangGraphChatView] Backend stop failed:', result.message);
+      }
+    } catch (error) {
+      console.error('[LangGraphChatView] Stop API error:', error);
+    }
+
+    // ⭐ 强制清除流状态，避免重新加载历史时消息重复
+    clearStreamState(sessionId.value);
+    clearOrchestratorStreamState(sessionId.value);
+
+    // ⭐ 延迟一小段时间后重新加载历史，确保后端已保存完整记录
+    // 后端在收到停止信号后会保存包含 [用户中断] 的完整历史
+    setTimeout(async () => {
+      if (sessionId.value && projectStore.currentProjectId) {
+        try {
+          const response = await getChatHistory(sessionId.value, projectStore.currentProjectId);
+          if (response.status === 'success' && response.data.history) {
+            const tempMessages = enrichMessagesWithSeparators(response.data.history, formatHistoryTime);
+            messages.value = mergeThinkingProcessMessages(tempMessages);
+            console.log('[LangGraphChatView] History reloaded after stop:', messages.value.length, 'messages');
+          }
+        } catch (error) {
+          console.error('[LangGraphChatView] Failed to reload history after stop:', error);
+        }
+      }
+    }, 500);  // 500ms 延迟，给后端足够时间保存历史
+  }
+
+  isLoading.value = false;
+  Message.info('已停止生成');
+};
+
+// 处理重试消息
+const handleRetry = async (message: ChatMessage) => {
+  const msgIndex = messages.value.findIndex(m =>
+    m.content === message.content &&
+    m.time === message.time &&
+    m.messageType === message.messageType
+  );
+
+  if (msgIndex === -1) {
+    Message.warning('未找到对应的消息');
+    return;
+  }
+
+  let userMessage: ChatMessage;
+  let deleteFromIndex: number;
+
+  if (message.messageType === 'human') {
+    // 用户消息重试：直接使用该消息，删除该消息及之后的所有内容
+    userMessage = message;
+    deleteFromIndex = msgIndex;
+  } else {
+    // AI消息重试：向前查找最近的用户消息
+    let foundUser: ChatMessage | null = null;
+    for (let i = msgIndex - 1; i >= 0; i--) {
+      if (messages.value[i].messageType === 'human') {
+        foundUser = messages.value[i];
+        break;
+      }
+    }
+
+    if (!foundUser) {
+      Message.warning('未找到对应的用户消息');
+      return;
+    }
+    userMessage = foundUser;
+    deleteFromIndex = msgIndex;
+  }
+
+  // 删除从指定位置开始的所有后续消息
+  messages.value = messages.value.slice(0, deleteFromIndex);
+
+  // 重新发送用户消息
+  await handleSendMessage({
+    message: userMessage.content,
+    image: userMessage.imageBase64,
+    imageDataUrl: userMessage.imageDataUrl
+  });
+};
+
+// 处理删除消息
+const handleDeleteMessage = async (message: ChatMessage) => {
+  const index = messages.value.findIndex(m =>
+    m.content === message.content &&
+    m.time === message.time &&
+    m.messageType === message.messageType
+  );
+
+  if (index === -1) {
+    Message.warning('未找到该消息');
+    return;
+  }
+
+  // 计算后端存储的消息索引
+  // 前端过滤掉了 system 消息，但后端存储的 checkpoint 中包含 system 消息（通常是第1条）
+  // 因此需要在前端索引基础上加1来对应后端的实际索引
+  const backendMessageTypes = ['human', 'ai', 'tool'];
+  const frontendMessagesBeforeIndex = messages.value
+    .slice(0, index)
+    .filter(m => backendMessageTypes.includes(m.messageType || '')).length;
+  // 后端通常有1条 system 消息在最开始，前端不显示但后端存储
+  const backendMessagesBeforeIndex = frontendMessagesBeforeIndex + 1;
+
+  const messagesAfter = messages.value.length - index - 1;
+  const confirmContent = messagesAfter > 0
+    ? `删除此消息将同时清除该消息之后的 ${messagesAfter} 条对话记录。是否继续？`
+    : '确定要删除这条消息吗？';
+
+  Modal.confirm({
+    title: '确认删除',
+    content: confirmContent,
+    okText: '确认删除',
+    cancelText: '取消',
+    okButtonProps: {
+      status: 'danger',
+    },
+    onOk: async () => {
+      try {
+        isLoading.value = true;
+
+        // 1. 回滚后端历史记录（使用后端消息索引）
+        if (sessionId.value && projectStore.currentProjectId) {
+          const response = await rollbackChatHistory(
+            sessionId.value,
+            projectStore.currentProjectId,
+            backendMessagesBeforeIndex  // 使用后端消息的索引
+          );
+
+          if (response.status !== 'success') {
+            Message.warning('服务器回滚可能未完成，但本地消息已删除');
+          }
+        }
+
+        // 2. 截断前端消息数组（删除该消息及之后的所有消息）
+        messages.value = messages.value.slice(0, index);
+
+        // 3. 如果删除后没有消息了
+        if (messages.value.length === 0) {
+          // 删除整个会话
+          if (sessionId.value && projectStore.currentProjectId) {
+            await deleteChatHistory(sessionId.value, projectStore.currentProjectId);
+          }
+          const oldSessionId = sessionId.value;
+          sessionId.value = '';
+          localStorage.removeItem('langgraph_session_id');
+          chatSessions.value = chatSessions.value.filter(s => s.id !== oldSessionId);
+          saveSessionsToStorage();
+          Message.success('对话历史已清空');
+        } else {
+          Message.success('消息已删除');
+        }
+      } catch (error) {
+        console.error('删除消息失败:', error);
+        Message.error('删除消息失败，请稍后重试');
+      } finally {
+        safeStopLoading();
+      }
+    }
+  });
+};
+
 // ⭐大脑模式消息处理
 const handleBrainModeMessage = async (message: string) => {
   // 添加用户消息
@@ -872,7 +1084,7 @@ const switchSession = async (id: string) => {
     console.error('加载会话历史失败:', error);
     Message.error('加载会话历史失败');
   } finally {
-    isLoading.value = false;
+    safeStopLoading();
   }
 };
 
@@ -930,7 +1142,7 @@ const deleteSession = async (id: string) => {
         console.error('删除对话失败:', error);
         Message.error('删除对话失败，请稍后重试');
       } finally {
-        isLoading.value = false;
+        safeStopLoading();
       }
     },
   });
@@ -977,7 +1189,7 @@ const batchDeleteSessions = async (sessionIds: string[]) => {
     console.error('批量删除对话失败:', error);
     Message.error('批量删除对话失败，请稍后重试');
   } finally {
-    isLoading.value = false;
+    safeStopLoading();
   }
 };
 
@@ -1021,16 +1233,16 @@ const clearChat = async () => {
         console.error('删除聊天历史失败:', error);
         Message.error('删除聊天历史失败，请稍后重试');
       } finally {
-        isLoading.value = false;
+        safeStopLoading();
       }
     },
   });
 };
 
 // 发送消息
-const handleSendMessage = async (data: { message: string; image?: string; imageDataUrl?: string }) => {
+const handleSendMessage = async (data: { message: string; image?: string; imageDataUrl?: string; quotedMessage?: ChatMessage | null }) => {
   const { message, image, imageDataUrl } = data;
-  
+
   if (!message.trim() && !image) {
     Message.warning('消息内容不能为空！');
     return;
@@ -1044,15 +1256,26 @@ const handleSendMessage = async (data: { message: string; image?: string; imageD
   // 🔧 发送新消息前，先固化上一轮的流式内容（避免内容丢失）
   solidifyStreamContent();
 
+  // 处理引用消息：将引用内容作为消息前缀
+  let finalMessage = message;
+  if (quotedMessage.value) {
+    const quoteContent = quotedMessage.value.content.length > 200
+      ? quotedMessage.value.content.slice(0, 200) + '...'
+      : quotedMessage.value.content;
+    finalMessage = `> ${quoteContent.replace(/\n/g, '\n> ')}\n\n${message}`;
+    // 清除引用
+    quotedMessage.value = null;
+  }
+
   // ⭐大脑模式使用orchestrator流式接口
   if (isBrainMode.value) {
-    await handleBrainModeMessage(message);
+    await handleBrainModeMessage(finalMessage);
     return;
   }
 
   // 添加用户消息（保存图片数据以便显示）
   messages.value.push({
-    content: message,
+    content: finalMessage,
     isUser: true,
     time: getCurrentTime(),
     messageType: 'human',
@@ -1063,7 +1286,7 @@ const handleSendMessage = async (data: { message: string; image?: string; imageD
   isLoading.value = true;
 
   const requestData: ChatRequest = {
-    message: message,
+    message: finalMessage,
     session_id: sessionId.value || undefined,
     project_id: String(projectStore.currentProjectId), // 转换为string类型
   };

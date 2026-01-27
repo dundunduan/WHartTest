@@ -4,7 +4,10 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import Count, Q
 from django.contrib.auth.models import User
+from django.utils import timezone
+from datetime import timedelta
 
 from .models import Project, ProjectMember
 from .serializers import (
@@ -58,7 +61,11 @@ class ProjectViewSet(BaseModelViewSet):
         # 成员管理操作需要 ProjectMember 模型权限 + 项目成员身份
         if self.action in ['members', 'add_member', 'remove_member', 'update_member_role']:
             return [HasProjectMemberPermission(), IsProjectMember()]
-        
+
+        # statistics 只需要用户认证和项目成员身份
+        if self.action == 'statistics':
+            return [IsAuthenticated(), IsProjectMember()]
+
         # 其他操作需要基础权限（用户认证 + Django模型权限）
         base_permissions = super().get_permissions()
         
@@ -216,3 +223,171 @@ class ProjectViewSet(BaseModelViewSet):
 
         serializer = ProjectMemberSerializer(member)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def statistics(self, request, pk=None):
+        """
+        获取项目统计数据
+        """
+        project = self.get_object()
+
+        # 导入所需模型
+        from testcases.models import TestCase, AutomationScript, TestExecution
+        from skills.models import Skill
+        from mcp_tools.models import RemoteMCPConfig
+        from requirements.models import RequirementDocument
+        from knowledge.models import Document
+
+        # 1. 功能用例统计（按审核状态）
+        testcase_stats = TestCase.objects.filter(project=project).aggregate(
+            total=Count('id'),
+            pending_review=Count('id', filter=Q(review_status='pending_review')),
+            approved=Count('id', filter=Q(review_status='approved')),
+            needs_optimization=Count('id', filter=Q(review_status='needs_optimization')),
+            optimization_pending_review=Count('id', filter=Q(review_status='optimization_pending_review')),
+            unavailable=Count('id', filter=Q(review_status='unavailable')),
+        )
+
+        # 2. UI用例（自动化脚本）统计
+        automation_stats = AutomationScript.objects.filter(
+            test_case__project=project
+        ).aggregate(
+            total=Count('id'),
+            draft=Count('id', filter=Q(status='draft')),
+            active=Count('id', filter=Q(status='active')),
+            deprecated=Count('id', filter=Q(status='deprecated')),
+        )
+
+        # 3. 测试执行统计（最近的执行汇总）
+        executions = TestExecution.objects.filter(suite__project=project)
+        execution_stats = executions.aggregate(
+            total_executions=Count('id'),
+            total_passed=Count('id', filter=Q(status='completed')),
+            total_failed=Count('id', filter=Q(status='failed')),
+            total_cancelled=Count('id', filter=Q(status='cancelled')),
+        )
+
+        # 计算用例执行结果汇总
+        execution_result_stats = executions.aggregate(
+            passed_count=Count('passed_count'),
+            failed_count=Count('failed_count'),
+            skipped_count=Count('skipped_count'),
+            error_count=Count('error_count'),
+        )
+
+        # 从所有执行记录中汇总实际的用例执行结果
+        from django.db.models import Sum
+        execution_result_totals = executions.aggregate(
+            total_passed_cases=Sum('passed_count'),
+            total_failed_cases=Sum('failed_count'),
+            total_skipped_cases=Sum('skipped_count'),
+            total_error_cases=Sum('error_count'),
+            total_cases=Sum('total_count'),
+        )
+
+        # 4. 执行历史趋势（近7天）
+        now = timezone.now()
+        seven_days_ago = now - timedelta(days=7)
+
+        # 近7天每日执行统计
+        daily_stats_7d = []
+        for i in range(7):
+            day_start = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+            day_executions = executions.filter(created_at__gte=day_start, created_at__lt=day_end)
+            day_agg = day_executions.aggregate(
+                count=Count('id'),
+                passed=Sum('passed_count'),
+                failed=Sum('failed_count'),
+            )
+            daily_stats_7d.append({
+                'date': day_start.strftime('%Y-%m-%d'),
+                'execution_count': day_agg['count'] or 0,
+                'passed': day_agg['passed'] or 0,
+                'failed': day_agg['failed'] or 0,
+            })
+        daily_stats_7d.reverse()
+
+        # 近7天统计汇总
+        stats_7d = executions.filter(created_at__gte=seven_days_ago).aggregate(
+            execution_count=Count('id'),
+            passed=Sum('passed_count'),
+            failed=Sum('failed_count'),
+        )
+
+        # 5. MCP统计（全局共享的MCP配置）
+        mcp_stats = {
+            'total': RemoteMCPConfig.objects.count(),
+            'active': RemoteMCPConfig.objects.filter(is_active=True).count(),
+        }
+
+        # 6. Skills统计（全局共享的Skills）
+        skill_stats = {
+            'total': Skill.objects.count(),
+            'active': Skill.objects.filter(is_active=True).count(),
+        }
+
+        # 7. 需求文档统计（当前项目）
+        requirement_stats = {
+            'total': RequirementDocument.objects.filter(project=project).count(),
+        }
+
+        # 8. 知识库文档统计（全局所有知识库文档）
+        knowledge_stats = {
+            'total': Document.objects.count(),
+        }
+
+        # 构建响应数据
+        response_data = {
+            'project': {
+                'id': project.id,
+                'name': project.name,
+            },
+            'testcases': {
+                'total': testcase_stats['total'],
+                'by_review_status': {
+                    'pending_review': testcase_stats['pending_review'],
+                    'approved': testcase_stats['approved'],
+                    'needs_optimization': testcase_stats['needs_optimization'],
+                    'optimization_pending_review': testcase_stats['optimization_pending_review'],
+                    'unavailable': testcase_stats['unavailable'],
+                },
+            },
+            'automation_scripts': {
+                'total': automation_stats['total'],
+                'by_status': {
+                    'draft': automation_stats['draft'],
+                    'active': automation_stats['active'],
+                    'deprecated': automation_stats['deprecated'],
+                },
+            },
+            'executions': {
+                'total_executions': execution_stats['total_executions'],
+                'by_status': {
+                    'completed': execution_stats['total_passed'],
+                    'failed': execution_stats['total_failed'],
+                    'cancelled': execution_stats['total_cancelled'],
+                },
+                'case_results': {
+                    'total': execution_result_totals['total_cases'] or 0,
+                    'passed': execution_result_totals['total_passed_cases'] or 0,
+                    'failed': execution_result_totals['total_failed_cases'] or 0,
+                    'skipped': execution_result_totals['total_skipped_cases'] or 0,
+                    'error': execution_result_totals['total_error_cases'] or 0,
+                },
+            },
+            'execution_trend': {
+                'daily_7d': daily_stats_7d,
+                'summary_7d': {
+                    'execution_count': stats_7d['execution_count'] or 0,
+                    'passed': stats_7d['passed'] or 0,
+                    'failed': stats_7d['failed'] or 0,
+                },
+            },
+            'mcp': mcp_stats,
+            'skills': skill_stats,
+            'requirements': requirement_stats,
+            'knowledge': knowledge_stats,
+        }
+
+        return Response(response_data)

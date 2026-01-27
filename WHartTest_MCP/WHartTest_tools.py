@@ -332,10 +332,11 @@ def add_functional_case(
         project_id: int = Field(description='项目id'),
         name: str = Field(description='用例名称'),
         precondition: str = Field(description='前置条件'),
-        level: str = Field(description='用例等级'),
+        level: str = Field(description='用例等级，可选值：P0、P1、P2、P3'),
         module_id: int = Field(description='模块id'),
         steps: list = Field(description='用例步骤,示例：,[{"step_number": 1,"description": "步骤描述1","expected_result": "预期结果1"},{"step_number": 2,"description": "步骤描述2","expected_result": "预期结果2"}]'),
-        notes: str = Field(description='备注')):
+        notes: str = Field(description='备注'),
+        review_status: str = Field(default='pending_review', description='审核状态: pending_review(待审核), approved(通过), needs_optimization(优化), optimization_pending_review(优化待审核), unavailable(不可用)')):
     """
     保WHartTest平台存WHartTest平台功能测试用例
     """
@@ -348,6 +349,11 @@ def add_functional_case(
             return "前置条件不能为空"
         if not level:
             return "用例等级不能为空"
+        
+        # 验证用例等级是否为合法值
+        valid_levels = ["P0", "P1", "P2", "P3"]
+        if level not in valid_levels:
+            return f"用例等级必须是以下值之一：{', '.join(valid_levels)}，当前值为：{level}"
         if not module_id:
             return "模块id不能为空"
         if not steps:
@@ -360,7 +366,8 @@ def add_functional_case(
             "level": level,
             "module_id": module_id,
             "steps": steps,
-            "notes": notes
+            "notes": notes,
+            "review_status": review_status
         }
 
         # 发起请求
@@ -397,7 +404,10 @@ def add_functional_case(
         if response.json().get("code") == 201:
             return {
                 "message": "保存成功",
-                "testcase": testcase_snapshot
+                "testcase": {
+                "id": created_case.get("id"),
+                "name": created_case.get("name", name)
+                }
             }
         else:
             return {
@@ -414,10 +424,12 @@ def edit_functional_case(
         case_id: int = Field(description='用例id'),
         name: str = Field(description='用例名称'),
         precondition: str = Field(description='前置条件'),
-        level: str = Field(description='用例等级'),
+        level: str = Field(description='用例等级，可选值：P0、P1、P2、P3'),
         module_id: int = Field(description='模块id'),
         steps: list = Field(description='用例步骤,示例：,[{"step_number": 1,"description": "步骤描述1","expected_result": "预期结果1"},{"step_number": 2,"description": "步骤描述2","expected_result": "预期结果2"}]'),
-        notes: str = Field(description='备注')):
+        notes: str = Field(description='备注'),
+        review_status: str = Field(default=None, description='审核状态(可选): pending_review(待审核), approved(通过), needs_optimization(优化), optimization_pending_review(优化待审核), unavailable(不可用)'),
+        is_optimization: bool = Field(default=False, description='是否为优化操作，True时自动设为optimization_pending_review')):
     """
     编辑WHartTest平台功能测试用例
     """
@@ -436,6 +448,17 @@ def edit_functional_case(
                 "steps": steps,
                 "notes": notes
                 }
+
+        # 验证用例等级是否为合法值
+        valid_levels = ["P0", "P1", "P2", "P3"]
+        if level not in valid_levels:
+            return f"用例等级必须是以下值之一：{', '.join(valid_levels)}，当前值为：{level}"
+        
+        # 处理优化工作流
+        if is_optimization:
+            data["review_status"] = "optimization_pending_review"
+        elif review_status:
+            data["review_status"] = review_status
 
         # 发起请求
         response = requests.patch(url, headers=headers, json=data)

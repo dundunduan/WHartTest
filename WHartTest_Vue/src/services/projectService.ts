@@ -576,3 +576,127 @@ export const updateProjectMemberRole = async (projectId: number, userId: number,
     };
   }
 };
+
+// 项目统计数据接口
+export interface ProjectStatistics {
+  project: {
+    id: number;
+    name: string;
+  };
+  testcases: {
+    total: number;
+    by_review_status: {
+      pending_review: number;
+      approved: number;
+      needs_optimization: number;
+      optimization_pending_review: number;
+      unavailable: number;
+    };
+  };
+  automation_scripts: {
+    total: number;
+    by_status: {
+      draft: number;
+      active: number;
+      deprecated: number;
+    };
+  };
+  executions: {
+    total_executions: number;
+    by_status: {
+      completed: number;
+      failed: number;
+      cancelled: number;
+    };
+    case_results: {
+      total: number;
+      passed: number;
+      failed: number;
+      skipped: number;
+      error: number;
+    };
+  };
+  execution_trend: {
+    daily_7d: Array<{
+      date: string;
+      execution_count: number;
+      passed: number;
+      failed: number;
+    }>;
+    summary_7d: {
+      execution_count: number;
+      passed: number;
+      failed: number;
+    };
+  };
+  mcp: {
+    total: number;
+    active: number;
+  };
+  skills: {
+    total: number;
+    active: number;
+  };
+  requirements: {
+    total: number;
+  };
+  knowledge: {
+    total: number;
+  };
+}
+
+interface ProjectStatisticsResponse {
+  success: boolean;
+  data?: ProjectStatistics;
+  error?: string;
+  statusCode?: number;
+}
+
+/**
+ * 获取项目统计数据
+ * @param projectId 项目ID
+ * @returns 返回一个Promise，解析为项目统计数据
+ */
+export const getProjectStatistics = async (projectId: number): Promise<ProjectStatisticsResponse> => {
+  const authStore = useAuthStore();
+  const accessToken = authStore.getAccessToken;
+
+  if (!accessToken) {
+    return {
+      success: false,
+      error: '未登录或会话已过期',
+    };
+  }
+
+  try {
+    const response = await axios.get(`${API_BASE_URL}/projects/${projectId}/statistics/`, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    });
+
+    // API返回的格式为 { status: 'success', code: 200, data: {...} }
+    if (response.data && response.data.status === 'success' && response.data.data) {
+      return {
+        success: true,
+        data: response.data.data,
+        statusCode: response.data.code,
+      };
+    } else {
+      return {
+        success: false,
+        error: response.data?.message || '获取项目统计数据失败：响应数据格式不正确',
+        statusCode: response.data?.code,
+      };
+    }
+  } catch (error: any) {
+    console.error('获取项目统计数据出错:', error);
+    return {
+      success: false,
+      error: error.response?.data?.message || error.message || '获取项目统计数据时发生错误',
+      statusCode: error.response?.status,
+    };
+  }
+};

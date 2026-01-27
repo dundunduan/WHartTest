@@ -520,11 +520,12 @@ class AgentLoopStreamAPIView(View):
 
             # 5.5. 添加内置工具（Playwright 脚本管理等）
             from orchestrator_integration.builtin_tools import get_builtin_tools
-            
+
             builtin_tools = get_builtin_tools(
                 user_id=request.user.id,
                 project_id=int(project_id),
                 test_case_id=test_case_id,
+                chat_session_id=session_id,
             )
             mcp_tools_list.extend(builtin_tools)
             logger.info(f"AgentLoopStreamAPI: Added {len(builtin_tools)} builtin tools")
@@ -909,6 +910,57 @@ page.get_by_placeholder("用户名").fill("admin")
             step_count = 0
             while step_count < orchestrator.max_steps:
                 step_count += 1
+
+                # ⭐ 检查停止信号
+                from .stop_signal import should_stop, clear_stop_signal
+                if should_stop(session_id):
+                    logger.info(f"AgentLoopStreamAPI: Stop signal received for session {session_id} at step {step_count}")
+                    clear_stop_signal(session_id)
+
+                    # 更新任务状态
+                    task.status = 'cancelled'
+                    task.error_message = '用户中断'
+                    task.completed_at = timezone.now()
+                    await orchestrator._save_task(task)
+
+                    # 保存已有的对话历史
+                    if conversation_messages:
+                        stopped_metadata = {
+                            "agent": "agent_loop",
+                            "agent_type": "stopped",
+                            "step": step_count,
+                            "max_steps": orchestrator.max_steps,
+                            "sse_event_type": "stopped"
+                        }
+                        conversation_messages.append(
+                            AIMessage(
+                                content="[用户中断]",
+                                additional_kwargs={"metadata": stopped_metadata}
+                            )
+                        )
+                        try:
+                            await self._save_chat_history(
+                                request.user.id,
+                                project_id,
+                                session_id,
+                                conversation_messages
+                            )
+                        except Exception as save_err:
+                            logger.warning(f"AgentLoopStreamAPI: Stop history save failed: {save_err}")
+
+                    yield create_sse_data({
+                        'type': 'stopped',
+                        'message': '已停止生成',
+                        'step': step_count
+                    })
+                    yield create_sse_data({
+                        'type': 'complete',
+                        'status': 'stopped',
+                        'steps': step_count - 1
+                    })
+                    yield "data: [DONE]\n\n"
+                    return
+
                 task.current_step = step_count
                 task.status = 'running'
                 await orchestrator._save_task(task)
@@ -922,6 +974,10 @@ page.get_by_placeholder("用户名").fill("admin")
 
                 # 构建上下文
                 step_context = orchestrator._build_step_context(blackboard, goal)
+
+                # ⭐ 第一步时传递图片数据给 LLM
+                if step_count == 1 and image_base64:
+                    step_context['image_base64'] = image_base64
 
                 # ⭐ 使用队列实现真正的流式输出
                 stream_queue = asyncio.Queue()
@@ -941,7 +997,8 @@ page.get_by_placeholder("用户名").fill("admin")
                 step_timeout = 300  # 秒
                 step_start_time = asyncio.get_event_loop().time()
                 step_timed_out = False
-                
+                user_stopped = False  # ⭐ 用户停止标志
+
                 # 实时输出流式内容
                 while not step_task.done():
                     try:
@@ -956,7 +1013,14 @@ page.get_by_placeholder("用户名").fill("admin")
                                 'message': f'步骤执行超时（{step_timeout}秒）'
                             })
                             break
-                        
+
+                        # ⭐ 检查用户停止信号
+                        if should_stop(session_id):
+                            user_stopped = True
+                            step_task.cancel()
+                            logger.info(f"AgentLoopStreamAPI: Stop signal in streaming for session {session_id}")
+                            break
+
                         # 等待队列数据，设置超时避免阻塞
                         msg_type, content = await asyncio.wait_for(
                             stream_queue.get(), 
@@ -1026,7 +1090,62 @@ page.get_by_placeholder("用户名").fill("admin")
                         'steps': step_count
                     })
                     return
-                
+
+                # ⭐ 如果用户停止，优雅退出
+                if user_stopped:
+                    # 等待任务取消完成
+                    try:
+                        await step_task
+                    except asyncio.CancelledError:
+                        pass
+
+                    # 清除停止信号
+                    clear_stop_signal(session_id)
+
+                    # 更新任务状态
+                    task.status = 'cancelled'
+                    task.error_message = '用户中断'
+                    task.completed_at = timezone.now()
+                    await orchestrator._save_task(task)
+
+                    # 保存已收集的流式内容到对话历史
+                    partial_response = ''.join(streaming_content) if streaming_content else ''
+                    stopped_metadata = {
+                        "agent": "agent_loop",
+                        "agent_type": "stopped",
+                        "step": step_count,
+                        "max_steps": orchestrator.max_steps,
+                        "sse_event_type": "stopped"
+                    }
+                    conversation_messages.append(
+                        AIMessage(
+                            content=f"[用户中断] {partial_response}" if partial_response else "[用户中断]",
+                            additional_kwargs={"metadata": stopped_metadata}
+                        )
+                    )
+                    try:
+                        await self._save_chat_history(
+                            request.user.id,
+                            project_id,
+                            session_id,
+                            conversation_messages
+                        )
+                    except Exception as save_err:
+                        logger.warning(f"AgentLoopStreamAPI: User stop history save failed: {save_err}")
+
+                    yield create_sse_data({
+                        'type': 'stopped',
+                        'message': '已停止生成',
+                        'step': step_count
+                    })
+                    yield create_sse_data({
+                        'type': 'complete',
+                        'status': 'stopped',
+                        'steps': step_count
+                    })
+                    yield "data: [DONE]\n\n"
+                    return
+
                 # 处理队列中剩余的数据
                 while not stream_queue.empty():
                     msg_type, content = await stream_queue.get()
@@ -1371,6 +1490,15 @@ page.get_by_placeholder("用户名").fill("admin")
         test_case_id = body_data.get('test_case_id')  # 用于关联生成的脚本
         use_pytest = body_data.get('use_pytest', True)  # 生成 pytest 格式还是简单格式
 
+        # 兜底：如果前端没传 test_case_id，尝试从消息中解析
+        if not test_case_id and user_message:
+            import re
+            # 匹配 "执行ID为 11 的测试用例" 或 "测试用例 ID：11" 等模式
+            match = re.search(r'(?:执行\s*ID\s*为|测试用例\s*(?:ID|id)[：:]\s*|case[_-]?id[：:=]\s*)(\d+)', user_message)
+            if match:
+                test_case_id = int(match.group(1))
+                logger.info(f"AgentLoopStreamAPI: Parsed test_case_id from message: {test_case_id}")
+
         # 3. 参数验证
         if not project_id:
             return StreamingHttpResponse(
@@ -1416,3 +1544,61 @@ page.get_by_placeholder("用户名").fill("admin")
         response['Cache-Control'] = 'no-cache'
         response['X-Accel-Buffering'] = 'no'
         return response
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class AgentLoopStopAPIView(View):
+    """
+    Agent Loop 停止 API
+
+    用于中断正在执行的 Agent Loop 任务。
+    """
+
+    async def authenticate_request(self, request):
+        """JWT 认证（复用 AgentLoopStreamAPIView 的逻辑）"""
+        auth_header = request.META.get('HTTP_AUTHORIZATION')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            raise AuthenticationFailed('Authentication credentials were not provided.')
+
+        token = auth_header.split(' ')[1]
+        jwt_auth = JWTAuthentication()
+
+        try:
+            validated_token = await sync_to_async(jwt_auth.get_validated_token)(token)
+            user = await sync_to_async(jwt_auth.get_user)(validated_token)
+            return user
+        except Exception as e:
+            raise AuthenticationFailed(f'Invalid token: {str(e)}')
+
+    async def post(self, request, *args, **kwargs):
+        """处理停止请求"""
+        from django.http import JsonResponse
+        from .stop_signal import set_stop_signal
+
+        # 1. 认证
+        try:
+            user = await self.authenticate_request(request)
+            request.user = user
+        except AuthenticationFailed as e:
+            return JsonResponse({'error': str(e), 'code': 401}, status=401)
+
+        # 2. 解析请求
+        try:
+            body_data = json.loads(request.body.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}', 'code': 400}, status=400)
+
+        session_id = body_data.get('session_id')
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required', 'code': 400}, status=400)
+
+        # 3. 设置停止信号
+        success = set_stop_signal(session_id)
+
+        logger.info(f"AgentLoopStopAPI: Stop signal set for session {session_id} by user {user.id}")
+
+        return JsonResponse({
+            'success': success,
+            'session_id': session_id,
+            'message': '已发送停止信号'
+        })

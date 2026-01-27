@@ -27,7 +27,7 @@ from prompts.models import UserPrompt
 from orchestrator_integration.context_compression import ConversationCompressor, CompressionSettings
 
 # --- New Imports ---
-from typing import TypedDict, Annotated, List
+from typing import TypedDict, Annotated, List, Optional
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
@@ -36,6 +36,8 @@ from langgraph.prebuilt import create_react_agent # For agent with tools
 import os
 import uuid # Import uuid module
 import copy  # For deep copying checkpoint data
+import re
+import base64  # For requirement doc images (multimodal)
 # Knowledge base integration
 from knowledge.langgraph_integration import KnowledgeRAGService, ConversationalRAGService, LangGraphKnowledgeIntegration
 from knowledge.models import KnowledgeBase
@@ -43,7 +45,7 @@ from django.conf import settings
 import logging # Import logging
 from asgiref.sync import sync_to_async # For async operations in sync context
 # 统一的 Checkpointer 工厂
-from wharttest_django.checkpointer import get_async_checkpointer, get_sync_checkpointer, delete_checkpoints_by_thread_id, delete_checkpoints_batch, check_history_exists, get_thread_ids_by_prefix
+from wharttest_django.checkpointer import get_async_checkpointer, get_sync_checkpointer, delete_checkpoints_by_thread_id, delete_checkpoints_batch, check_history_exists, get_thread_ids_by_prefix, rollback_checkpoints_to_count
 import json # For JSON serialization in streaming
 import asyncio # For async operations
 
@@ -53,6 +55,8 @@ from django.http import StreamingHttpResponse
 from mcp_tools.models import RemoteMCPConfig # To load remote MCP server configs
 from langchain_mcp_adapters.client import MultiServerMCPClient # To connect to remote MCPs
 from mcp_tools.persistent_client import mcp_session_manager # 持久化MCP会话管理器
+# Requirement documents (docimg:// placeholders)
+from requirements.models import RequirementDocument
 # --- End New Imports ---
 
 logger = logging.getLogger(__name__) # Initialize logger
@@ -82,6 +86,124 @@ def create_sse_data(data_dict):
     """
     json_str = json.dumps(data_dict, ensure_ascii=False)
     return f"data: {json_str}\n\n"
+
+_REQ_DOC_ID_RE = re.compile(r'需求文档ID[:：]\s*([0-9a-fA-F-]{36})')
+_REQ_DOC_IMAGE_URL_RE = re.compile(
+    r'/api/requirements/documents/(?P<doc_id>[0-9a-fA-F-]{36})/images/(?P<image_id>[^/]+)/'
+)
+_REQ_DOCIMG_MD_RE = re.compile(r'!\[[^\]]*?\]\(docimg://(?P<image_id>[^)]+)\)')
+_REQ_DOCIMG_API_MD_RE = re.compile(
+    r'!\[[^\]]*?\]\(/api/requirements/documents/(?P<doc_id>[0-9a-fA-F-]{36})/images/(?P<image_id>[^)/]+)/*\)'
+)
+
+
+def _detect_requirement_document_id(message: str) -> Optional[str]:
+    if not message:
+        return None
+    url_match = _REQ_DOC_IMAGE_URL_RE.search(message)
+    if url_match:
+        return url_match.group("doc_id")
+    text_match = _REQ_DOC_ID_RE.search(message)
+    if text_match:
+        return text_match.group(1)
+    return None
+
+
+def _replace_docimg_markdown_with_api_urls(message: str, document_id: str) -> str:
+    if not message or not document_id or "docimg://" not in message:
+        return message
+
+    def _repl(match: re.Match) -> str:
+        alt = match.group(1)
+        image_id = match.group(2)
+        return f"![{alt}](/api/requirements/documents/{document_id}/images/{image_id}/)"
+
+    return re.sub(r'!\[(.*?)\]\(docimg://([^)]+)\)', _repl, message)
+
+
+def _extract_requirement_image_ids_in_order(message: str) -> list[str]:
+    if not message:
+        return []
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    # docimg://img_001 in Markdown
+    for m in _REQ_DOCIMG_MD_RE.finditer(message):
+        image_id = m.group("image_id")
+        if image_id and image_id not in seen:
+            seen.add(image_id)
+            ordered.append(image_id)
+
+    # /api/requirements/documents/{doc}/images/{img}/ in Markdown
+    for m in _REQ_DOCIMG_API_MD_RE.finditer(message):
+        image_id = m.group("image_id")
+        if image_id and image_id not in seen:
+            seen.add(image_id)
+            ordered.append(image_id)
+
+    return ordered
+
+
+def _file_to_data_url(path: str, content_type: str) -> str:
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:{content_type};base64,{encoded}"
+
+
+async def _extract_requirement_doc_images_for_message(
+    message: str,
+    project: Project,
+) -> tuple[str, list[str], Optional[str]]:
+    """
+    从消息中识别需求文档图片引用（docimg:// 或 /api/requirements/documents/.../images/...），
+    并返回：
+    - message_text: 将 docimg:// 占位符替换为可访问的 /api URL 后的文本（用于展示/存档）
+    - image_data_urls: 需要送入多模态模型的 data:... URL 列表（按出现顺序、去重）
+    - document_id: 解析到的需求文档ID（UUID字符串）
+    """
+    if not message:
+        return message, [], None
+
+    document_id = _detect_requirement_document_id(message)
+    if not document_id:
+        return message, [], None
+
+    message_text = _replace_docimg_markdown_with_api_urls(message, document_id)
+    image_ids = _extract_requirement_image_ids_in_order(message_text)
+    if not image_ids:
+        return message_text, [], document_id
+
+    # 只允许读取当前项目下的文档图片，避免跨项目泄露
+    document = await sync_to_async(
+        lambda: RequirementDocument.objects.filter(id=document_id, project=project).first()
+    )()
+    if not document:
+        logger.warning(
+            "Chat: RequirementDocument %s not found in project %s, skip image attachment",
+            document_id,
+            getattr(project, "id", None),
+        )
+        return message_text, [], document_id
+
+    images = await sync_to_async(lambda: list(document.images.filter(image_id__in=image_ids)))()
+    image_map = {img.image_id: img for img in images}
+
+    data_urls: list[str] = []
+    for image_id in image_ids:
+        img = image_map.get(image_id)
+        if not img:
+            logger.warning("Chat: Document image %s not found in document %s", image_id, document_id)
+            continue
+        try:
+            path = img.image_file.path
+            data_url = await sync_to_async(_file_to_data_url)(path, img.content_type)
+            data_urls.append(data_url)
+        except Exception as e:
+            logger.error("Chat: Failed to load document image %s (%s): %s", image_id, document_id, e)
+            continue
+
+    return message_text, data_urls, document_id
 
 # --- AgentState Definition ---
 class AgentState(TypedDict):
@@ -113,6 +235,96 @@ class LLMConfigViewSet(BaseModelViewSet):
         if serializer.validated_data.get('is_active', False):
             LLMConfig.objects.filter(is_active=True).exclude(pk=serializer.instance.pk).update(is_active=False)
         serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def test_connection(self, request, pk=None):
+        """测试LLM配置连接"""
+        import requests as http_requests
+        config = self.get_object()
+        api_url = config.api_url.rstrip('/')
+        headers = {'Content-Type': 'application/json'}
+        if config.api_key:
+            headers['Authorization'] = f'Bearer {config.api_key}'
+        try:
+            resp = http_requests.post(
+                f'{api_url}/chat/completions',
+                json={'model': config.name, 'messages': [{'role': 'user', 'content': 'Hi'}], 'max_tokens': 5},
+                headers=headers,
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get('choices') and len(data['choices']) > 0:
+                return Response({'status': 'success', 'message': '连接测试成功'})
+            return Response({'status': 'warning', 'message': '响应格式异常'}, status=status.HTTP_200_OK)
+        except http_requests.Timeout:
+            return Response({'status': 'error', 'message': '请求超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
+        except http_requests.RequestException as e:
+            msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    msg = e.response.json().get('error', {}).get('message', str(e))
+                except Exception:
+                    msg = e.response.text[:200] if e.response.text else str(e)
+            return Response({'status': 'error', 'message': f'连接失败: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def fetch_models(self, request):
+        """
+        从LLM API获取可用模型列表
+        请求体: 
+        - 新建配置时: { "api_url": "...", "api_key": "..." }
+        - 编辑配置时: { "config_id": 123 } 或 { "api_url": "...", "config_id": 123 }
+          (api_key 优先从数据库获取)
+        """
+        import requests as http_requests
+        
+        api_url = request.data.get('api_url', '').rstrip('/')
+        api_key = request.data.get('api_key', '')
+        config_id = request.data.get('config_id')
+        
+        # 如果提供了 config_id，优先从数据库获取配置
+        if config_id:
+            try:
+                config = LLMConfig.objects.get(pk=config_id)
+                if not api_url:
+                    api_url = config.api_url.rstrip('/')
+                if not api_key:
+                    api_key = config.api_key or ''
+            except LLMConfig.DoesNotExist:
+                return Response({'status': 'error', 'message': '配置不存在'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if not api_url:
+            return Response({'status': 'error', 'message': '请提供 API URL'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+        
+        try:
+            resp = http_requests.get(
+                f'{api_url}/models',
+                headers=headers,
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data.get('data'):
+                models = [model.get('id') for model in data['data'] if model.get('id')]
+                return Response({'status': 'success', 'models': models})
+            else:
+                return Response({'status': 'warning', 'message': 'API 返回格式不符合预期', 'models': []})
+        except http_requests.Timeout:
+            return Response({'status': 'error', 'message': '请求超时'}, status=status.HTTP_408_REQUEST_TIMEOUT)
+        except http_requests.RequestException as e:
+            msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    msg = e.response.json().get('error', {}).get('message', str(e))
+                except Exception:
+                    msg = e.response.text[:200] if e.response.text else str(e)
+            return Response({'status': 'error', 'message': f'获取模型列表失败: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 def get_effective_system_prompt(user, prompt_id=None):
@@ -208,20 +420,90 @@ async def _format_project_credentials(project):
         return ""
 
 
+async def _format_project_skills(project):
+    """
+    格式化全局 Skills 信息为文本（渐进式加载）
+
+    只注入 Skill 的名称和描述（元数据），完整的 SKILL.md 内容需要通过
+    read_skill_content 工具按需获取。Skills 全局共享，不限制项目。
+
+    Args:
+        project: 项目对象（保留参数兼容性，但不用于过滤）
+
+    Returns:
+        str: 格式化后的 Skills 元数据文本
+    """
+    try:
+        from skills.models import Skill
+
+        # Skills 全局共享，不限制项目
+        skills = await sync_to_async(list)(
+            Skill.objects.filter(is_active=True).all()
+        )
+
+        if not skills:
+            return ""
+
+        skills_text = "\n\n# Available Skills\n\n"
+        skills_text += "以下是可用的 Skills 列表。需要使用某个 Skill 时，先调用 `read_skill_content` 工具获取完整的使用说明，再调用 `execute_skill_script` 执行命令。\n\n"
+        for skill in skills:
+            skills_text += f"- **{skill.name}**: {skill.description}\n"
+
+        return skills_text
+
+    except Exception as e:
+        logger.error(f"Format project skills error: {e}")
+        return ""
+
+
+async def _inject_project_context(prompt_content: str, project) -> str:
+    """
+    注入项目上下文（凭据和 Skills）到提示词中
+
+    Args:
+        prompt_content: 原始提示词内容
+        project: 项目对象
+
+    Returns:
+        str: 注入上下文后的提示词
+    """
+    if not project:
+        return prompt_content
+
+    # 注入凭据信息
+    if '{credentials_info}' in prompt_content:
+        credentials_text = await _format_project_credentials(project)
+        prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+
+    # 注入 Skills 信息
+    if '{skills_info}' in prompt_content:
+        skills_text = await _format_project_skills(project)
+        prompt_content = prompt_content.replace('{skills_info}', skills_text)
+    else:
+        # 即使没有占位符，也自动追加 Skills 到提示词末尾
+        skills_text = await _format_project_skills(project)
+        if skills_text:
+            prompt_content = prompt_content + skills_text
+
+    return prompt_content
+
+
 async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
     """
     获取有效的系统提示词（异步版本）
     优先级：用户指定的提示词 > 用户默认提示词 > 全局LLM配置的system_prompt
-    如果提示词中包含{credentials_info}占位符，且提供了project参数，将自动注入项目凭据信息
+    支持占位符: {credentials_info} 注入项目凭据, {skills_info} 注入项目 Skills 元数据
+    如果未使用 {skills_info} 占位符，活跃的 Skills 元数据将自动追加到提示词末尾
+    （完整的 SKILL.md 内容通过 read_skill_content 工具按需获取）
 
     Args:
         user: 当前用户
         prompt_id: 指定的提示词ID（可选）
-        project: 项目对象（可选），用于注入凭据信息
+        project: 项目对象（可选），用于注入凭据和 Skills 信息
 
     Returns:
         tuple: (prompt_content, prompt_source)
-        prompt_content: 提示词内容（已注入凭据信息）
+        prompt_content: 提示词内容（已注入项目上下文）
         prompt_source: 提示词来源 ('user_specified', 'user_default', 'global', 'none')
     """
     try:
@@ -233,11 +515,7 @@ async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
                     user=user,
                     is_active=True
                 )
-                prompt_content = user_prompt.content
-                # 注入凭据信息
-                if project and '{credentials_info}' in prompt_content:
-                    credentials_text = await _format_project_credentials(project)
-                    prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+                prompt_content = await _inject_project_context(user_prompt.content, project)
                 return prompt_content, 'user_specified'
             except UserPrompt.DoesNotExist:
                 logger.warning(f"Specified prompt {prompt_id} not found for user {user.id}")
@@ -250,11 +528,7 @@ async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
                 is_active=True
             )
             if default_prompt:
-                prompt_content = default_prompt.content
-                # 注入凭据信息
-                if project and '{credentials_info}' in prompt_content:
-                    credentials_text = await _format_project_credentials(project)
-                    prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+                prompt_content = await _inject_project_context(default_prompt.content, project)
                 return prompt_content, 'user_default'
         except UserPrompt.DoesNotExist:
             pass
@@ -263,11 +537,7 @@ async def get_effective_system_prompt_async(user, prompt_id=None, project=None):
         try:
             active_config = await sync_to_async(LLMConfig.objects.get)(is_active=True)
             if active_config.system_prompt and active_config.system_prompt.strip():
-                prompt_content = active_config.system_prompt.strip()
-                # 注入凭据信息
-                if project and '{credentials_info}' in prompt_content:
-                    credentials_text = await _format_project_credentials(project)
-                    prompt_content = prompt_content.replace('{credentials_info}', credentials_text)
+                prompt_content = await _inject_project_context(active_config.system_prompt.strip(), project)
                 return prompt_content, 'global'
         except LLMConfig.DoesNotExist:
             logger.warning("No active LLM configuration found")
@@ -629,21 +899,44 @@ class ChatAPIView(APIView):
                     messages_list.append(SystemMessage(content=effective_prompt))
                     logger.info(f"ChatAPIView: Added {prompt_source} system prompt: {effective_prompt[:100]}...")
 
-                # 构建用户消息（支持多模态）
-                if image_base64:
-                    # 如果有图片，创建多模态消息
-                    human_message_content = [
-                        {"type": "text", "text": user_message_content},
-                        {
+                clean_user_message = user_message_content.strip()
+                clean_user_message, req_image_data_urls, req_doc_id = await _extract_requirement_doc_images_for_message(
+                    clean_user_message,
+                    project,
+                )
+
+                if req_image_data_urls and not active_config.supports_vision:
+                    logger.warning(
+                        "ChatAPIView: Requirement document images detected but model %s does not support vision; sending text only",
+                        active_config.name,
+                    )
+
+                # 构建用户消息（支持多模态：上传图片 + 需求文档图片）
+                multimodal_parts = []
+                if active_config.supports_vision and (image_base64 or req_image_data_urls):
+                    multimodal_parts.append({"type": "text", "text": clean_user_message})
+
+                    # 需求文档图片（按占位符出现顺序）
+                    for data_url in req_image_data_urls:
+                        multimodal_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+
+                    # 用户上传图片（最后追加）
+                    if image_base64:
+                        multimodal_parts.append({
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                        }
-                    ]
-                    messages_list.append(HumanMessage(content=human_message_content))
-                    logger.info(f"ChatAPIView: Added multimodal message with image")
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                        })
+
+                    additional_kwargs = {}
+                    if req_doc_id:
+                        additional_kwargs["requirement_document_id"] = req_doc_id
+                        additional_kwargs["image_source"] = "requirement_document"
+
+                    messages_list.append(HumanMessage(content=multimodal_parts, additional_kwargs=additional_kwargs))
+                    logger.info("ChatAPIView: Added multimodal message with %s doc images", len(req_image_data_urls))
                 else:
                     # 纯文本消息
-                    messages_list.append(HumanMessage(content=user_message_content))
+                    messages_list.append(HumanMessage(content=clean_user_message))
                 input_messages = {"messages": messages_list}
 
                 invoke_config = {
@@ -668,10 +961,21 @@ class ChatAPIView(APIView):
 
                     # 找到本次对话的起始位置（用户刚发送的消息）
                     user_message_index = -1
+                    def _human_message_text(content):
+                        if isinstance(content, list):
+                            text_parts = []
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text_parts.append(item.get("text", ""))
+                            return "".join(text_parts)
+                        return content
+
                     for i, msg in enumerate(messages):
-                        if isinstance(msg, HumanMessage) and msg.content == user_message_content:
-                            user_message_index = i
-                            break
+                        if isinstance(msg, HumanMessage):
+                            msg_text = _human_message_text(getattr(msg, "content", ""))
+                            if msg_text == clean_user_message:
+                                user_message_index = i
+                                break
 
                     # 如果找到了用户消息，提取从该消息开始的所有后续消息
                     if user_message_index >= 0:
@@ -686,7 +990,8 @@ class ChatAPIView(APIView):
                                 content = msg.content if hasattr(msg, 'content') else str(msg)
                             elif isinstance(msg, HumanMessage):
                                 msg_type = "human"
-                                content = msg.content if hasattr(msg, 'content') else str(msg)
+                                raw_content = msg.content if hasattr(msg, 'content') else str(msg)
+                                content = _human_message_text(raw_content)
                             elif isinstance(msg, AIMessage):
                                 msg_type = "ai"
                                 content = msg.content if hasattr(msg, 'content') else str(msg)
@@ -886,10 +1191,11 @@ class ChatHistoryAPIView(APIView):
                                     msg_type = "human"
                                     raw_content = msg.content if hasattr(msg, 'content') else str(msg)
                                     # 处理多模态消息（包含图片的列表格式）
-                                    image_data = None  # 用于存储图片数据
+                                    image_data = None  # 用于存储图片数据（仅用于“上传图片”这类单图消息）
                                     if isinstance(raw_content, list):
-                                        # 提取文本部分
+                                        # 提取文本部分 + 图片部分
                                         text_parts = []
+                                        image_urls = []
                                         for item in raw_content:
                                             if isinstance(item, dict):
                                                 if item.get("type") == "text":
@@ -901,8 +1207,20 @@ class ChatHistoryAPIView(APIView):
                                                         url = image_url.get("url", "")
                                                         # url格式: data:image/jpeg;base64,xxx
                                                         if url and url.startswith("data:image/"):
-                                                            image_data = url  # 保存完整的Data URL
-                                        content = " ".join(text_parts) if text_parts else "[包含图片的消息]"
+                                                            image_urls.append(url)
+
+                                        # 保留原文本格式（拼接而不是用空格连接），避免破坏Markdown/换行
+                                        content = "".join(text_parts) if text_parts else "[包含图片的消息]"
+
+                                        # 如果文本中已经包含需求文档图片占位符/URL，则不再通过 image 字段额外展示图片，避免重复
+                                        has_requirement_doc_images = (
+                                            isinstance(content, str)
+                                            and ("docimg://" in content or "/api/requirements/documents/" in content)
+                                        )
+
+                                        # 仅对“单图上传”这类消息保留 image 字段
+                                        if image_urls and (len(image_urls) == 1) and not has_requirement_doc_images:
+                                            image_data = image_urls[0]
                                     else:
                                         content = raw_content
                                 elif isinstance(msg, AIMessage):
@@ -974,7 +1292,7 @@ class ChatHistoryAPIView(APIView):
                                         "content": content,
                                     }
                                     # 如果消息包含图片，添加图片数据
-                                    if msg_type == "human" and 'image_data' in locals() and image_data:
+                                    if msg_type == "human" and image_data:
                                         message_data["image"] = image_data
                                     
                                     # ⭐ 如果 AI 消息包含 agent 信息（Agent Loop），添加完整元数据
@@ -1148,6 +1466,80 @@ class ChatHistoryAPIView(APIView):
             return Response({
                 "status": "error", "code": status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "message": f"Database error while deleting chat history: {str(e)}", "data": {},
+                "errors": {"database_error": [str(e)]}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def patch(self, request, *args, **kwargs):
+        """
+        回滚聊天历史到指定消息数量
+        保留前 keep_count 条消息，删除之后的所有消息
+        """
+        session_id = request.query_params.get('session_id')
+        project_id = request.query_params.get('project_id')
+        keep_count = request.data.get('keep_count')
+
+        if not session_id:
+            return Response({
+                "status": "error", "code": status.HTTP_400_BAD_REQUEST,
+                "message": "session_id query parameter is required.", "data": {},
+                "errors": {"session_id": ["This field is required."]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not project_id:
+            return Response({
+                "status": "error", "code": status.HTTP_400_BAD_REQUEST,
+                "message": "project_id query parameter is required.", "data": {},
+                "errors": {"project_id": ["This field is required."]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if keep_count is None or not isinstance(keep_count, int) or keep_count < 0:
+            return Response({
+                "status": "error", "code": status.HTTP_400_BAD_REQUEST,
+                "message": "keep_count must be a non-negative integer.", "data": {},
+                "errors": {"keep_count": ["This field must be a non-negative integer."]}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 检查项目权限
+        project = self._check_project_permission(request.user, project_id)
+        if not project:
+            return Response({
+                "status": "error", "code": status.HTTP_403_FORBIDDEN,
+                "message": "You don't have permission to access this project or project doesn't exist.", "data": {},
+                "errors": {"project_id": ["Permission denied or project not found."]}
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        thread_id_parts = [str(request.user.id), str(project_id), str(session_id)]
+        thread_id = "_".join(thread_id_parts)
+
+        if not check_history_exists():
+            return Response({
+                "status": "success",
+                "code": status.HTTP_200_OK,
+                "message": "No chat history found to rollback (history storage does not exist).",
+                "data": {"thread_id": thread_id, "session_id": session_id, "deleted_count": 0}
+            }, status=status.HTTP_200_OK)
+
+        try:
+            deleted_count = rollback_checkpoints_to_count(thread_id, keep_count)
+
+            if deleted_count > 0:
+                message = f"Successfully rolled back chat history for session_id: {session_id}. Kept {keep_count} checkpoints, removed {deleted_count} checkpoints."
+            else:
+                message = f"No checkpoints to remove for session_id: {session_id}. Current count is already at or below {keep_count}."
+
+            logger.info(f"ChatHistoryAPIView PATCH: {message}")
+
+            return Response({
+                "status": "success", "code": status.HTTP_200_OK,
+                "message": message,
+                "data": {"thread_id": thread_id, "session_id": session_id, "deleted_count": deleted_count, "kept_count": keep_count}
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"ChatHistoryAPIView PATCH error: {str(e)}")
+            return Response({
+                "status": "error", "code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "message": f"Database error while rolling back chat history: {str(e)}", "data": {},
                 "errors": {"database_error": [str(e)]}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1615,23 +2007,47 @@ class ChatStreamAPIView(View):
 
                 # 确保用户消息内容格式正确
                 clean_user_message = user_message_content.strip()
+                clean_user_message, req_image_data_urls, req_doc_id = await _extract_requirement_doc_images_for_message(
+                    clean_user_message,
+                    project,
+                )
                 if not clean_user_message and not image_base64:
                     logger.error("ChatStreamAPIView: User message is empty after stripping")
                     yield create_sse_data({'type': 'error', 'message': 'User message cannot be empty'})
                     return
 
                 # 构建用户消息（支持多模态）
-                if image_base64:
-                    # 如果有图片，创建多模态消息
-                    human_message_content = [
-                        {"type": "text", "text": clean_user_message},
-                        {
+                if req_image_data_urls and not active_config.supports_vision:
+                    logger.warning(
+                        "ChatStreamAPIView: Requirement document images detected but model %s does not support vision; sending text only",
+                        active_config.name,
+                    )
+
+                if active_config.supports_vision and (image_base64 or req_image_data_urls):
+                    multimodal_parts = [{"type": "text", "text": clean_user_message}]
+
+                    # 需求文档图片（按占位符出现顺序）
+                    for data_url in req_image_data_urls:
+                        multimodal_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+
+                    # 用户上传图片（最后追加）
+                    if image_base64:
+                        multimodal_parts.append({
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                        }
-                    ]
-                    messages_list.append(HumanMessage(content=human_message_content))
-                    logger.info(f"ChatStreamAPIView: Added multimodal message with image")
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                        })
+
+                    additional_kwargs = {}
+                    if req_doc_id:
+                        additional_kwargs["requirement_document_id"] = req_doc_id
+                        additional_kwargs["image_source"] = "requirement_document"
+
+                    messages_list.append(HumanMessage(content=multimodal_parts, additional_kwargs=additional_kwargs))
+                    logger.info(
+                        "ChatStreamAPIView: Added multimodal message (doc_images=%s, uploaded_image=%s)",
+                        len(req_image_data_urls),
+                        bool(image_base64),
+                    )
                 else:
                     # 纯文本消息
                     messages_list.append(HumanMessage(content=clean_user_message))

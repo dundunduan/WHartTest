@@ -33,6 +33,7 @@
                 :loading="loadingModels"
                 placeholder="输入或选择模型名称 (如: gpt-4-turbo)"
                 allow-clear
+                :filter-option="filterModelOption"
                 @focus="handleModelInputFocus"
                 class="model-input"
               />
@@ -56,10 +57,10 @@
           </a-form-item>
         </a-col>
         <a-col :span="12">
-          <a-form-item field="api_key" label="API Key" :required="!isEditing">
+          <a-form-item field="api_key" label="API Key">
             <a-input-password
               v-model="formData.api_key"
-              :placeholder="isEditing ? '留空不修改' : '请输入 API Key'"
+              :placeholder="isEditing ? '留空不修改' : '请输入 API Key（可选）'"
             />
           </a-form-item>
         </a-col>
@@ -147,7 +148,7 @@ import {
   type FieldRule,
 } from '@arco-design/web-vue';
 import { IconRefresh, IconThunderbolt } from '@arco-design/web-vue/es/icon';
-import axios from 'axios';
+import { createLlmConfig, partialUpdateLlmConfig, testLlmConnection, fetchModels } from '@/features/langgraph/services/llmConfigService';
 import type { LlmConfig, CreateLlmConfigRequest, PartialUpdateLlmConfigRequest } from '@/features/langgraph/types/llmConfig';
 
 interface Props {
@@ -183,6 +184,7 @@ const defaultFormData: CreateLlmConfigRequest = {
   is_active: false,
 };
 const formData = ref<CreateLlmConfigRequest>({ ...defaultFormData });
+const currentConfigId = ref<number | null>(null);
 
 const isEditing = computed(() => !!props.configData?.id);
 
@@ -193,24 +195,6 @@ const formRules: Record<string, FieldRule[]> = {
     { required: true, message: 'API URL 不能为空' },
     { type: 'url', message: '请输入有效的 URL' },
   ],
-  api_key: [
-    {
-      required: !isEditing.value,
-      message: 'API Key 不能为空',
-      validator: (value: string | undefined, cb: (error?: string) => void) => {
-        if (!isEditing.value && !value) {
-          return cb('API Key 不能为空');
-        }
-        if (value && value.length < 10 && !isEditing.value) {
-          return cb('API key 必须至少 10 个字符长。');
-        }
-        if (isEditing.value && value && value.length > 0 && value.length < 10) {
-          return cb('API key 必须至少 10 个字符长。');
-        }
-        return cb();
-      }
-    },
-  ],
 };
 
 
@@ -218,6 +202,7 @@ watch(
   () => props.visible,
   (newVal) => {
     if (newVal) {
+      currentConfigId.value = null;
       if (props.configData && props.configData.id) {
         // 编辑模式：填充表单，但不包括 API Key（除非用户想修改）
         formData.value = {
@@ -280,10 +265,6 @@ const handleSubmit = async () => {
   } else {
     // 新增模式
     submitData = { ...formData.value };
-     if (!submitData.api_key) { // 防御性检查，理论上表单校验会阻止
-        Message.error('API Key 不能为空');
-        return;
-    }
     emit('submit', submitData);
   }
 };
@@ -292,108 +273,97 @@ const handleCancel = () => {
   emit('cancel');
 };
 
-// 从 API 获取可用模型列表（OpenAI 兼容格式）
+// 从后端 API 获取可用模型列表
 const fetchAvailableModels = async () => {
   if (!formData.value.api_url) {
     Message.warning('请先填写 API URL');
     return;
   }
 
-  if (!formData.value.api_key) {
-    Message.warning('请先填写 API Key');
-    return;
-  }
-
   loadingModels.value = true;
-  
-  try {
-    const apiUrl = formData.value.api_url.replace(/\/$/, '');
-    const modelsEndpoint = `${apiUrl}/models`;
-    const response = await axios.get(modelsEndpoint, {
-      headers: {
-        'Authorization': `Bearer ${formData.value.api_key}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 10000,
-    });
 
-    if (response.data && response.data.data) {
-      const models = response.data.data.map((model: any) => model.id);
-      modelOptions.value = models;
-      if (models.length > 0) {
-        Message.success(`成功获取 ${models.length} 个模型`);
+  try {
+    // 编辑模式时传递 configId，让后端从数据库获取 API Key
+    const configId = props.configData?.id;
+    const response = await fetchModels(
+      formData.value.api_url,
+      formData.value.api_key || undefined,
+      configId
+    );
+    
+    if (response.status === 'success' && response.data?.models) {
+      modelOptions.value = response.data.models;
+      if (response.data.models.length > 0) {
+        Message.success(`成功获取 ${response.data.models.length} 个模型`);
       } else {
         Message.warning('未找到可用模型');
       }
     } else {
-      Message.warning('API 返回格式不符合预期');
+      Message.error(response.message || '获取模型列表失败');
       modelOptions.value = [];
     }
   } catch (error: any) {
     console.error('获取模型列表失败:', error);
-    const errorMsg = error.response?.data?.error?.message 
-      || error.response?.statusText 
-      || error.message 
-      || '获取模型列表失败';
-    Message.error(`获取模型列表失败: ${errorMsg}`);
+    Message.error('获取模型列表失败');
     modelOptions.value = [];
   } finally {
     loadingModels.value = false;
   }
 };
 
-// 测试 LLM 模型真实可用性（OpenAI 兼容格式）
+// 测试 LLM 模型连接（后端发起测试）
 const testLlmModel = async () => {
-  if (!formData.value.api_url) {
-    Message.warning('请先填写 API URL');
-    return;
-  }
-  if (!formData.value.api_key) {
-    Message.warning('请先填写 API Key');
-    return;
-  }
-  if (!formData.value.name) {
-    Message.warning('请先填写模型名称');
+  if (!formRef.value) return;
+  const validation = await formRef.value.validate();
+  if (validation) {
+    Message.error('请先完善表单必填项');
     return;
   }
 
   testingModel.value = true;
-  
   try {
-    const apiUrl = formData.value.api_url.replace(/\/$/, '');
-    const chatEndpoint = `${apiUrl}/chat/completions`;
-    const response = await axios.post(chatEndpoint, {
-      model: formData.value.name,
-      messages: [
-        { role: 'user', content: 'Hi, this is a test message.' }
-      ],
-      max_tokens: 10
-    }, {
-      headers: {
-        'Authorization': `Bearer ${formData.value.api_key}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000,
-    });
+    let configId = props.configData?.id || currentConfigId.value;
 
-    if (response.data && response.data.choices && response.data.choices.length > 0) {
-      const content = response.data.choices[0].message?.content;
-      if (content !== undefined) {
-        Message.success('模型测试成功！服务运行正常');
-      } else {
-        Message.warning('模型响应成功但数据格式异常');
+    // 如果是新建且未保存，先保存
+    if (!configId) {
+      const createResp = await createLlmConfig(formData.value);
+      if (createResp.status !== 'success' || !createResp.data) {
+        Message.error(createResp.message || '保存配置失败');
+        return;
       }
+      configId = createResp.data.id;
+      currentConfigId.value = configId;
+      Message.success('配置已自动保存');
+    } else if (isEditing.value) {
+      // 编辑模式：先保存更改
+      const partialData: PartialUpdateLlmConfigRequest = {
+        config_name: formData.value.config_name,
+        provider: formData.value.provider,
+        name: formData.value.name,
+        api_url: formData.value.api_url,
+        is_active: formData.value.is_active,
+      };
+      if (formData.value.api_key) partialData.api_key = formData.value.api_key;
+      if (formData.value.system_prompt !== undefined) partialData.system_prompt = formData.value.system_prompt;
+      if (formData.value.supports_vision !== undefined) partialData.supports_vision = formData.value.supports_vision;
+      if (formData.value.context_limit !== undefined) partialData.context_limit = formData.value.context_limit;
+      const updateResp = await partialUpdateLlmConfig(configId, partialData);
+      if (updateResp.status !== 'success') {
+        Message.error(updateResp.message || '保存配置失败');
+        return;
+      }
+    }
+
+    // 调用后端测试接口
+    const testResp = await testLlmConnection(configId);
+    if (testResp.status === 'success') {
+      Message.success(testResp.data?.message || '连接测试成功');
     } else {
-      Message.warning('模型响应成功但未返回有效数据');
+      Message.error(testResp.message || '连接测试失败');
     }
   } catch (error: any) {
-    console.error('模型测试失败:', error);
-    const errorMsg = error.response?.data?.error?.message 
-      || error.response?.data?.message
-      || error.response?.statusText 
-      || error.message 
-      || '模型测试失败';
-    Message.error(`模型测试失败: ${errorMsg}`);
+    console.error('测试失败:', error);
+    Message.error('测试失败: ' + (error.message || '未知错误'));
   } finally {
     testingModel.value = false;
   }
@@ -401,9 +371,17 @@ const testLlmModel = async () => {
 
 // 处理模型输入框聚焦
 const handleModelInputFocus = () => {
-  if (formData.value.api_url && formData.value.api_key && modelOptions.value.length === 0) {
+  if (formData.value.api_url && modelOptions.value.length === 0) {
     fetchAvailableModels();
   }
+};
+
+// 自定义模型过滤，没输入时显示全部，输入时模糊匹配
+const filterModelOption = (inputValue: string, option: { value: string }) => {
+  if (!inputValue) {
+    return true; // 没有输入时显示全部
+  }
+  return option.value.toLowerCase().includes(inputValue.toLowerCase());
 };
 </script>
 

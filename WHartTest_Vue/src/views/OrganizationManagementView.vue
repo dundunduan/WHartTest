@@ -135,16 +135,19 @@ const columns = [
     title: '组织ID',
     dataIndex: 'id',
     width: 80,
+    align: 'center',
   },
   {
     title: '组织名称',
     dataIndex: 'name',
+    align: 'center',
   },
   {
     title: '操作',
     slotName: 'operations',
     width: 240,
     fixed: 'right',
+    align: 'center',
   },
 ];
 

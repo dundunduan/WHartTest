@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 
 from .prompts import get_agent_prompt
 from .context_compression import CompressionSettings, CompressionResult, ConversationCompressor

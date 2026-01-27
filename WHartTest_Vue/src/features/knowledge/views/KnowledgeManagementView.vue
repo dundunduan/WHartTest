@@ -414,6 +414,8 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   padding: 20px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .page-header {
@@ -421,12 +423,21 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .page-title {
   font-size: 24px;
   font-weight: bold;
   margin: 0;
+  flex-shrink: 0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .content-container {
@@ -446,6 +457,7 @@ onMounted(async () => {
   flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .detail-panel-full {
@@ -460,19 +472,84 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .search-bar {
   display: flex;
   gap: 12px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.search-bar :deep(.arco-input-search) {
+  width: 100% !important;
+  max-width: 300px;
 }
 
 .filter-bar {
   display: flex;
   gap: 12px;
+  flex-shrink: 0;
 }
 
+/* 表格自适应 */
+.knowledge-base-list :deep(.arco-table) {
+  width: 100%;
+}
 
+.knowledge-base-list :deep(.arco-table-container) {
+  overflow-x: auto;
+}
+
+.knowledge-base-list :deep(.arco-table-td) {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .knowledge-management {
+    padding: 16px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .list-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .search-bar {
+    width: 100%;
+  }
+
+  .search-bar :deep(.arco-input-search) {
+    max-width: none;
+  }
+
+  .filter-bar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 600px) {
+  .knowledge-management {
+    padding: 12px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
 
 .stats-cell {
   font-size: 12px;

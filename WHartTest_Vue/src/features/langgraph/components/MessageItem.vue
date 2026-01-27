@@ -83,6 +83,31 @@
           v-html="formattedContent"
         ></div>
       </div>
+
+      <!-- 消息操作按钮 -->
+      <div v-if="showActions" class="message-actions">
+        <a-tooltip content="复制" mini>
+          <a-button type="text" size="mini" class="action-btn" @click="handleCopy">
+            <template #icon><icon-copy /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="canQuote" content="引用" mini>
+          <a-button type="text" size="mini" class="action-btn" @click="$emit('quote', message)">
+            <template #icon><icon-reply /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="canRetry" content="重试" mini>
+          <a-button type="text" size="mini" class="action-btn" @click="$emit('retry', message)">
+            <template #icon><icon-refresh /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="canDelete" content="删除" mini>
+          <a-button type="text" size="mini" class="action-btn action-btn-danger" @click="$emit('delete', message)">
+            <template #icon><icon-delete /></template>
+          </a-button>
+        </a-tooltip>
+      </div>
+
       <div class="message-time">{{ message.time }}</div>
     </div>
     </template>
@@ -91,6 +116,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { Button as AButton, Tooltip as ATooltip, Message } from '@arco-design/web-vue';
+import { IconCopy, IconReply, IconRefresh, IconDelete } from '@arco-design/web-vue/es/icon';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import logo from '/WHartTest.png';
@@ -138,7 +165,54 @@ const props = defineProps<Props>();
 
 defineEmits<{
   'toggle-expand': [message: ChatMessage];
+  'quote': [message: ChatMessage];
+  'retry': [message: ChatMessage];
+  'delete': [message: ChatMessage];
 }>();
+
+// 操作按钮可见性
+const showActions = computed(() => {
+  const type = props.message.messageType;
+  return !['step_separator', 'agent_step'].includes(type || '') && !props.message.isLoading;
+});
+
+const canQuote = computed(() => ['human', 'ai'].includes(props.message.messageType || ''));
+const canRetry = computed(() => ['human', 'ai'].includes(props.message.messageType || '') && !props.message.isStreaming && !props.message.isLoading);
+const canDelete = computed(() => props.message.messageType !== 'system' && showActions.value);
+
+// 复制到剪贴板（兼容HTTP环境）
+const handleCopy = async () => {
+  try {
+    // 优先使用 Clipboard API（HTTPS或localhost可用）
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(props.message.content);
+      Message.success('复制成功');
+      return;
+    }
+    
+    // 回退方案：使用 document.execCommand（兼容HTTP）
+    const textArea = document.createElement('textarea');
+    textArea.value = props.message.content;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    const successful = document.execCommand('copy');
+    document.body.removeChild(textArea);
+    
+    if (successful) {
+      Message.success('复制成功');
+    } else {
+      Message.error('复制失败，请手动复制');
+    }
+  } catch (error) {
+    console.error('复制失败:', error);
+    Message.error('复制失败，请手动复制');
+  }
+};
 
 // 消息样式类
 const messageClass = computed(() => {
@@ -194,12 +268,27 @@ const shouldCollapse = computed(() => {
   return lines > 4;
 });
 
+const REQUIREMENT_DOC_ID_RE = /需求文档ID[:：]\s*([0-9a-fA-F-]{36})/;
+
+const replaceDocImgPlaceholders = (content: string): string => {
+  if (!content || !content.includes('docimg://')) return content;
+  const match = content.match(REQUIREMENT_DOC_ID_RE);
+  if (!match) return content;
+  const documentId = match[1];
+  return content.replace(/!\[(.*?)\]\(docimg:\/\/([^)]+)\)/g, (_m, alt, imageId) => {
+    return `![${alt}](/api/requirements/documents/${documentId}/images/${imageId}/)`;
+  });
+};
+
 
 
 // 格式化消息内容
 const formattedContent = computed(() => {
   try {
     let processedContent = props.message.content;
+
+    // 将需求文档图片占位符转换为可访问的图片URL（用于Markdown渲染）
+    processedContent = replaceDocImgPlaceholders(processedContent);
 
     // 如果是工具消息，尝试格式化JSON
     if (props.message.messageType === 'tool') {
@@ -218,7 +307,10 @@ const formattedContent = computed(() => {
     const htmlContent = marked(processedContent) as string;
 
     // 使用DOMPurify净化HTML防止XSS攻击
-    return DOMPurify.sanitize(htmlContent);
+    return DOMPurify.sanitize(htmlContent, {
+      ADD_TAGS: ['img'],
+      ADD_ATTR: ['src', 'alt', 'title'],
+    });
   } catch (error) {
     console.error('Error parsing markdown:', error);
     return props.message.content;
@@ -481,18 +573,24 @@ const formatToolMessage = (content: string) => {
 /* 图片容器样式 */
 .message-image-container {
   margin-bottom: 8px;
-  max-width: 300px;
+  max-width: 100%;
+  width: 100%;
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: center; /* 居中显示图片 */
 }
 
 .message-image {
   width: 100%;
   height: auto;
+  max-width: 100%;
+  max-width: min(100%, 600px); /* 限制图片最大宽度为600px或容器宽度，取较小值 */
   display: block;
   cursor: pointer;
   transition: transform 0.2s ease;
+  object-fit: contain;
 }
 
 .message-image:hover {
@@ -651,6 +749,48 @@ const formatToolMessage = (content: string) => {
 
 .icon-down::before {
   content: '▼';
+}
+
+/* 消息操作按钮 */
+.message-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.message-wrapper:hover .message-actions {
+  opacity: 1;
+}
+
+.action-btn {
+  padding: 4px 6px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  border-radius: 4px !important;
+  color: #86909c !important;
+  transition: all 0.2s ease !important;
+}
+
+.action-btn:hover {
+  background-color: #f2f3f5 !important;
+  color: #165dff !important;
+}
+
+.action-btn-danger:hover {
+  background-color: #ffece8 !important;
+  color: #f53f3f !important;
+}
+
+.user-message .action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.2) !important;
+  color: white !important;
+}
+
+.user-message .action-btn-danger:hover {
+  background-color: rgba(245, 63, 63, 0.3) !important;
+  color: white !important;
 }
 
 .message-time {
@@ -830,6 +970,16 @@ const formatToolMessage = (content: string) => {
   color: #666;
 }
 
+/* 用户消息中的引用样式 - 适配蓝色背景 */
+.user-message .message-bubble :deep(blockquote) {
+  border-left-color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.85);
+  background-color: rgba(255, 255, 255, 0.1);
+  padding: 8px 12px;
+  border-radius: 0 6px 6px 0;
+  margin-bottom: 12px;
+}
+
 .message-bubble :deep(table) {
   border-collapse: collapse;
   width: 100%;
@@ -883,6 +1033,43 @@ const formatToolMessage = (content: string) => {
   cursor: pointer;
   transition: background-color 0.2s ease;
   user-select: none;
+}
+
+/* 响应式图片尺寸调整 */
+@media (max-width: 768px) {
+  .message-image {
+    max-width: min(100%, 400px); /* 在小屏幕上限制最大宽度为400px */
+  }
+}
+
+@media (max-width: 480px) {
+  .message-image {
+    max-width: min(100%, 300px); /* 在手机上限制最大宽度为300px */
+  }
+}
+
+/* 确保消息气泡内的图片不会超出容器 */
+.message-bubble :deep(img) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 8px 0;
+}
+
+/* 用户消息中的图片样式 */
+.user-message .message-image-container {
+  display: flex;
+  justify-content: flex-end; /* 用户消息的图片靠右对齐 */
+}
+
+.user-message .message-image {
+  max-width: min(100%, 500px); /* 用户消息的图片稍微小一些 */
+}
+
+/* AI消息中的图片样式 */
+.ai-message .message-image-container {
+  display: flex;
+  justify-content: flex-start; /* AI消息的图片靠左对齐 */
 }
 
 .thinking-header:hover {

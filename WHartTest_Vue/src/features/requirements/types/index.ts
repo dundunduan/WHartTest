@@ -28,7 +28,7 @@ export type DocumentStatus =
   | 'failed';            // 处理失败
 
 // 文档类型枚举
-export type DocumentType = 'pdf' | 'docx' | 'pptx' | 'txt' | 'md' | 'html';
+export type DocumentType = 'pdf' | 'doc' | 'docx' | 'txt' | 'md';
 
 // 需求文档接口
 export interface RequirementDocument {
@@ -51,6 +51,8 @@ export interface RequirementDocument {
   word_count: number;
   page_count: number;
   modules_count: number;
+  has_images: boolean;
+  image_count: number;
 }
 
 // 创建文档请求
@@ -83,7 +85,7 @@ export interface DocumentModule {
 }
 
 // 模块操作类型
-export type ModuleOperationType = 'merge' | 'split' | 'rename' | 'reorder' | 'delete' | 'adjust_boundary';
+export type ModuleOperationType = 'merge' | 'split' | 'rename' | 'reorder' | 'delete' | 'create' | 'update' | 'adjust_boundary';
 
 // 模块操作请求
 export interface ModuleOperationRequest {
@@ -107,7 +109,7 @@ export interface BatchModuleOperationRequest {
 }
 
 // 拆分级别类型
-export type SplitLevel = 'h1' | 'h2' | 'h3' | 'auto';
+export type SplitLevel = 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'auto';
 
 // 模块拆分请求
 export interface SplitModulesRequest {
@@ -163,6 +165,9 @@ export interface DocumentStructure {
   h1_titles: string[];
   h2_titles: string[];
   h3_titles: string[];
+  h4_titles: string[];
+  h5_titles: string[];
+  h6_titles: string[];
 }
 
 // 拆分建议
@@ -199,6 +204,7 @@ export interface StartReviewRequest {
     testability_analysis?: number;
     feasibility_analysis?: number;
     clarity_analysis?: number;
+    logic_analysis?: number;
   };
 }
 
@@ -223,7 +229,7 @@ export interface ModuleProgress {
 export type Rating = 'excellent' | 'good' | 'fair' | 'poor';
 
 // 问题类型
-export type IssueType = 'specification' | 'clarity' | 'completeness' | 'consistency' | 'feasibility';
+export type IssueType = 'specification' | 'clarity' | 'completeness' | 'consistency' | 'feasibility' | 'logic';
 
 // 问题优先级
 export type IssuePriority = 'high' | 'medium' | 'low';
@@ -284,6 +290,10 @@ export interface ReviewReport {
   recommendations: string;
   issues: ReviewIssue[];
   module_results: ModuleReviewResult[];
+  // 进度跟踪字段
+  progress?: number;
+  current_step?: string;
+  completed_steps?: string[];
 }
 
 // 文档详情（包含模块和评审报告）
@@ -341,11 +351,10 @@ export const DocumentStatusDisplay: Record<DocumentStatus, string> = {
 
 export const DocumentTypeDisplay: Record<DocumentType, string> = {
   pdf: 'PDF',
+  doc: 'Word文档',
   docx: 'Word文档',
-  pptx: 'PowerPoint',
   txt: '文本文件',
-  md: 'Markdown',
-  html: 'HTML'
+  md: 'Markdown'
 };
 
 export const RatingDisplay: Record<Rating, string> = {

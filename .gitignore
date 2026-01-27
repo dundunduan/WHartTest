@@ -66,3 +66,4 @@ docs/.vitepress/cache/
 playwright-screenshots/
 WHartTest_Django/chat_history.sqlite-shm
 WHartTest_Django/chat_history.sqlite-wal
+.gemini/settings.json

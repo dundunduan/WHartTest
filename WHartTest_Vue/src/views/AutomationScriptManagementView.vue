@@ -11,7 +11,7 @@
             v-model="filterStatus"
             placeholder="脚本状态"
             allow-clear
-            style="width: 150px"
+            class="filter-select"
             @change="handleFilterChange"
           >
             <a-option value="active">启用</a-option>
@@ -22,7 +22,7 @@
             v-model="filterSource"
             placeholder="来源"
             allow-clear
-            style="width: 150px"
+            class="filter-select"
             @change="handleFilterChange"
           >
             <a-option value="ai_generated">AI 生成</a-option>
@@ -31,7 +31,7 @@
           <a-input-search
             v-model="searchKeyword"
             placeholder="搜索脚本名称"
-            style="width: 200px"
+            class="search-input"
             @search="handleFilterChange"
           />
         </a-space>
@@ -48,29 +48,30 @@
         :loading="loading"
         :pagination="pagination"
         :header-cell-style="{ textAlign: 'center' }"
+        :scroll="{ x: 900 }"
         @page-change="handlePageChange"
       >
         <template #columns>
-          <a-table-column title="ID" data-index="id" :width="60" align="center" />
-          <a-table-column title="脚本名称" data-index="name" :width="180" align="center">
+          <a-table-column title="ID" data-index="id" :width="50" align="center" />
+          <a-table-column title="脚本名称" data-index="name" :width="140" align="center" ellipsis>
             <template #cell="{ record }">
               <a-link @click="showDetail(record)">{{ record.name }}</a-link>
             </template>
           </a-table-column>
-          <a-table-column title="关联用例" data-index="test_case_name" :width="150" align="center" />
-          <a-table-column title="类型" data-index="script_type" :width="100" align="center">
+          <a-table-column title="关联用例" data-index="test_case_name" :width="120" align="center" ellipsis />
+          <a-table-column title="类型" data-index="script_type" :width="120" align="center">
             <template #cell="{ record }">
               <a-tag color="blue">{{ getScriptTypeLabel(record.script_type) }}</a-tag>
             </template>
           </a-table-column>
-          <a-table-column title="来源" data-index="source" :width="100" align="center">
+          <a-table-column title="来源" data-index="source" :width="70" align="center">
             <template #cell="{ record }">
               <a-tag :color="getSourceColor(record.source)">
                 {{ getSourceLabel(record.source) }}
               </a-tag>
             </template>
           </a-table-column>
-          <a-table-column title="状态" data-index="status" :width="80" align="center">
+          <a-table-column title="状态" data-index="status" :width="70" align="center">
             <template #cell="{ record }">
               <a-badge :status="getStatusBadge(record.status)" :text="getStatusLabel(record.status)" />
             </template>
@@ -78,7 +79,7 @@
           <a-table-column title="版本" data-index="version" :width="60" align="center">
             <template #cell="{ record }">v{{ record.version }}</template>
           </a-table-column>
-          <a-table-column title="最近执行" data-index="latest_status" :width="90" align="center">
+          <a-table-column title="最近" data-index="latest_status" :width="80" align="center">
             <template #cell="{ record }">
               <template v-if="record.latest_status">
                 <a-tag :color="getExecutionStatusColor(record.latest_status)">
@@ -88,14 +89,14 @@
               <span v-else class="text-gray">未执行</span>
             </template>
           </a-table-column>
-          <a-table-column title="创建时间" data-index="created_at" :width="160" align="center">
+          <a-table-column title="创建时间" data-index="created_at" :width="100" align="center">
             <template #cell="{ record }">
               {{ formatTime(record.created_at) }}
             </template>
           </a-table-column>
-          <a-table-column title="操作" :width="200" fixed="right" align="center">
+          <a-table-column title="操作" :width="210" fixed="right" align="center">
             <template #cell="{ record }">
-              <a-space>
+              <a-space :size="2">
                 <a-button type="text" size="small" @click="showDetail(record)">
                   <icon-eye />
                 </a-button>
@@ -130,7 +131,7 @@
     <a-drawer
       v-model:visible="detailVisible"
       :title="currentScript?.name || '脚本详情'"
-      :width="800"
+      :width="drawerWidth"
       :footer="false"
     >
       <template v-if="currentScript">
@@ -248,7 +249,7 @@
     <a-modal
       v-model:visible="editModalVisible"
       :title="isEditMode ? '编辑脚本' : '新建脚本'"
-      :width="1400"
+      :width="modalWidth"
       :body-style="{ padding: 0 }"
       :mask-closable="false"
       :footer="false"
@@ -444,14 +445,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, shallowRef } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, shallowRef, watch } from 'vue';
 import { Message, type FormInstance } from '@arco-design/web-vue';
-import { 
-  IconRefresh, IconEye, IconPlayArrow, IconDelete, IconPlus, IconEdit, IconCode, IconPause, IconLoading, IconCodeBlock, IconClose, IconLeft, IconRight
-} from '@arco-design/web-vue/es/icon';
-import { useProjectStore } from '@/store/projectStore';
-import request from '@/utils/request';
-import { VueMonacoEditor } from '@guolao/vue-monaco-editor';
+	import { 
+	  IconRefresh, IconEye, IconPlayArrow, IconDelete, IconPlus, IconEdit, IconCode, IconPause, IconLoading, IconCodeBlock, IconClose, IconLeft, IconRight
+	} from '@arco-design/web-vue/es/icon';
+	import { useProjectStore } from '@/store/projectStore';
+	import request from '@/utils/request';
+	import {
+	  createAutomationScript,
+	  deleteAutomationScript,
+	  executeAutomationScript,
+	  getAutomationScript,
+	  listAutomationScriptExecutions,
+	  listAutomationScripts,
+	  updateAutomationScript,
+	} from '@/services/automationScriptService';
+	import { VueMonacoEditor } from '@guolao/vue-monaco-editor';
 
 interface AutomationScript {
   id: number;
@@ -495,6 +505,25 @@ const searchKeyword = ref('');
 const filterStatus = ref<string | undefined>();
 const filterSource = ref<string | undefined>();
 const executingId = ref<number | null>(null);
+
+// 响应式宽度计算
+const windowWidth = ref(window.innerWidth);
+const updateWindowWidth = () => {
+  windowWidth.value = window.innerWidth;
+};
+
+const drawerWidth = computed(() => {
+  if (windowWidth.value < 600) return '100%';
+  if (windowWidth.value < 900) return '90%';
+  return 800;
+});
+
+const modalWidth = computed(() => {
+  if (windowWidth.value < 600) return '100%';
+  if (windowWidth.value < 1000) return '95%';
+  if (windowWidth.value < 1400) return '90%';
+  return 1400;
+});
 
 // 详情抽屉
 const detailVisible = ref(false);
@@ -633,6 +662,12 @@ const buildScriptPayload = () => ({
 
 // 静默保存脚本（不关闭弹窗，用于调试执行前自动保存）
 const silentSaveScript = async (): Promise<boolean> => {
+  const projectId = projectStore.currentProjectId;
+  if (!projectId) {
+    Message.warning('请先选择项目');
+    return false;
+  }
+
   try {
     // validate() 校验失败时会 reject，成功时返回 undefined
     await formRef.value?.validate();
@@ -641,22 +676,22 @@ const silentSaveScript = async (): Promise<boolean> => {
     return false;
   }
   
-  try {
-    const payload = buildScriptPayload();
-    
-    if (isEditMode.value && editingScriptId.value) {
-      await request.patch(`/automation-scripts/${editingScriptId.value}/`, payload);
-    } else {
-      const response = await request.post('/automation-scripts/', payload);
-      // 新建脚本后更新 editingScriptId，这样 WebSocket 能找到脚本
-      editingScriptId.value = response.data.id;
-      isEditMode.value = true;
-    }
-    return true;
-  } catch (error: any) {
-    Message.error(error.response?.data?.detail || error.message || '保存失败');
-    return false;
-  }
+	try {
+	  const payload = buildScriptPayload();
+	  
+	  if (isEditMode.value && editingScriptId.value) {
+	    await updateAutomationScript(projectId, editingScriptId.value, payload);
+	  } else {
+	    const response = await createAutomationScript(projectId, payload);
+	    // 新建脚本后更新 editingScriptId，这样 WebSocket 能找到脚本
+	    editingScriptId.value = response.data.id;
+	    isEditMode.value = true;
+	  }
+	  return true;
+	} catch (error: any) {
+	  Message.error(error.response?.data?.detail || error.message || '保存失败');
+	  return false;
+	}
 };
 
 // 开始实时预览
@@ -786,14 +821,6 @@ const stopLivePreview = () => {
   currentFrameIndex.value = 0;
 };
 
-// 组件卸载时清理 WebSocket
-onUnmounted(() => {
-  if (previewWebSocket) {
-    previewWebSocket.close();
-    previewWebSocket = null;
-  }
-});
-
 // 分页
 const pagination = ref({
   current: 1,
@@ -804,32 +831,32 @@ const pagination = ref({
 });
 
 // 获取脚本列表
-const fetchScripts = async () => {
-  loading.value = true;
-  try {
-    const params: Record<string, string | number> = {
-      page: pagination.value.current,
-      page_size: pagination.value.pageSize,
-    };
+	const fetchScripts = async () => {
+	  loading.value = true;
+	  try {
+	    const params: Record<string, string | number> = {
+	      page: pagination.value.current,
+	      page_size: pagination.value.pageSize,
+	    };
     
     if (projectStore.currentProjectId) {
       params.project_id = projectStore.currentProjectId;
     }
-    if (filterStatus.value) params.status = filterStatus.value;
-    if (filterSource.value) params.source = filterSource.value;
-    if (searchKeyword.value) params.search = searchKeyword.value;
-    
-    const response = await request.get('/automation-scripts/', { params });
-    // 响应拦截器会将后端的 { status, data: [...] } 转换为 { data: [...] }
-    scripts.value = response.data.data || response.data.results || [];
-    // 优先使用后端返回的 count，否则使用当前结果长度
-    pagination.value.total = response.data.count ?? scripts.value.length;
-  } catch (error: any) {
-    Message.error(error.message || '获取脚本列表失败');
-  } finally {
-    loading.value = false;
-  }
-};
+	    if (filterStatus.value) params.status = filterStatus.value;
+	    if (filterSource.value) params.source = filterSource.value;
+	    if (searchKeyword.value) params.search = searchKeyword.value;
+	    
+	    const response = await listAutomationScripts(params as any);
+	    // 响应拦截器会将后端的 { status, data: [...] } 转换为 { data: [...] }
+	    scripts.value = response.data.data || response.data.results || [];
+	    // 优先使用后端返回的 count，否则使用当前结果长度
+	    pagination.value.total = response.data.count ?? scripts.value.length;
+	  } catch (error: any) {
+	    Message.error(error.message || '获取脚本列表失败');
+	  } finally {
+	    loading.value = false;
+	  }
+	};
 
 // 筛选变化时重置页码并刷新
 const handleFilterChange = () => {
@@ -845,21 +872,27 @@ const handlePageChange = (page: number) => {
 
 // 显示详情
 const showDetail = async (script: AutomationScript) => {
+  const projectId = projectStore.currentProjectId;
+  if (!projectId) {
+    Message.warning('请先选择项目');
+    return;
+  }
+
   currentScript.value = script;
   detailVisible.value = true;
   executionExpandedKeys.value = [];
   
   // 加载完整脚本信息和执行历史
-  executionsLoading.value = true;
-  try {
-    const [scriptRes, execRes] = await Promise.all([
-      request.get(`/automation-scripts/${script.id}/`),
-      request.get(`/automation-scripts/${script.id}/executions/`)
-    ]);
-    // 响应拦截器会将后端的 { data: {...} } 解包
-    const scriptData = scriptRes.data.data || scriptRes.data;
-    const execData = execRes.data.data || execRes.data.results || execRes.data || [];
-    currentScript.value = {
+	  executionsLoading.value = true;
+	  try {
+	    const [scriptRes, execRes] = await Promise.all([
+	      getAutomationScript(projectId, script.id),
+	      listAutomationScriptExecutions(projectId, script.id)
+	    ]);
+	    // 响应拦截器会将后端的 { data: {...} } 解包
+	    const scriptData = scriptRes.data.data || scriptRes.data;
+	    const execData = execRes.data.data || execRes.data.results || execRes.data || [];
+	    currentScript.value = {
       ...scriptData,
       executions: execData
     };
@@ -872,32 +905,42 @@ const showDetail = async (script: AutomationScript) => {
 
 // 执行脚本
 const executeScript = async (script: AutomationScript, recordVideo: boolean = false) => {
-  executingId.value = script.id;
-  const modeText = recordVideo ? '录屏模式' : '快速模式';
-  try {
-    await request.post(`/automation-scripts/${script.id}/execute/`, {
-      record_video: recordVideo
-    });
-    Message.success(`脚本执行已启动（${modeText}）`);
-    // 刷新列表以显示最新执行状态
-    fetchScripts();
-  } catch (error: any) {
-    Message.error(error.response?.data?.error || '执行脚本失败');
-  } finally {
-    executingId.value = null;
+  const projectId = projectStore.currentProjectId;
+  if (!projectId) {
+    Message.warning('请先选择项目');
+    return;
   }
-};
+
+	  executingId.value = script.id;
+	  const modeText = recordVideo ? '录屏模式' : '快速模式';
+	  try {
+	    await executeAutomationScript(projectId, script.id, { record_video: recordVideo });
+	    Message.success(`脚本执行已启动（${modeText}）`);
+	    // 刷新列表以显示最新执行状态
+	    fetchScripts();
+	  } catch (error: any) {
+	    Message.error(error.response?.data?.error || '执行脚本失败');
+	  } finally {
+	    executingId.value = null;
+	  }
+	};
 
 // 删除脚本
 const deleteScript = async (id: number) => {
-  try {
-    await request.delete(`/automation-scripts/${id}/`);
-    Message.success('脚本已删除');
-    fetchScripts();
-  } catch (error: any) {
-    Message.error(error.message || '删除失败');
-  }
-};
+  const projectId = projectStore.currentProjectId;
+	  if (!projectId) {
+	    Message.warning('请先选择项目');
+	    return;
+	  }
+
+	  try {
+	    await deleteAutomationScript(projectId, id);
+	    Message.success('脚本已删除');
+	    fetchScripts();
+	  } catch (error: any) {
+	    Message.error(error.message || '删除失败');
+	  }
+	};
 
 // 搜索测试用例
 const searchTestCases = async (keyword: string) => {
@@ -959,12 +1002,18 @@ const openCreateModal = () => {
 
 // 打开编辑弹窗
 const openEditModal = async (script: AutomationScript) => {
+  const projectId = projectStore.currentProjectId;
+  if (!projectId) {
+    Message.warning('请先选择项目');
+    return;
+  }
+
   isEditMode.value = true;
   editingScriptId.value = script.id;
   
   // 加载完整脚本数据
   try {
-    const response = await request.get(`/automation-scripts/${script.id}/`);
+    const response = await getAutomationScript(projectId, script.id);
     const data = response.data.data || response.data;
     
     Object.assign(scriptForm, {
@@ -996,6 +1045,12 @@ const closeEditModal = () => {
 
 // 保存脚本
 const handleSaveScript = async () => {
+  const projectId = projectStore.currentProjectId;
+  if (!projectId) {
+    Message.warning('请先选择项目');
+    return;
+  }
+
   try {
     // validate() 校验失败时会 reject
     await formRef.value?.validate();
@@ -1009,10 +1064,10 @@ const handleSaveScript = async () => {
     const payload = buildScriptPayload();
     
     if (isEditMode.value && editingScriptId.value) {
-      await request.patch(`/automation-scripts/${editingScriptId.value}/`, payload);
+      await updateAutomationScript(projectId, editingScriptId.value, payload);
       Message.success('脚本已更新');
     } else {
-      await request.post('/automation-scripts/', payload);
+      await createAutomationScript(projectId, payload);
       Message.success('脚本已创建');
     }
     
@@ -1102,12 +1157,27 @@ const getExecutionStatusColor = (status: string) => {
 
 onMounted(() => {
   fetchScripts();
+  window.addEventListener('resize', updateWindowWidth);
+});
+
+watch(() => projectStore.currentProjectId, () => {
+  pagination.value.current = 1;
+  fetchScripts();
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateWindowWidth);
+  if (previewWebSocket) {
+    previewWebSocket.close();
+    previewWebSocket = null;
+  }
 });
 </script>
 
 <style scoped>
 .automation-script-management {
-  padding: 20px;
+  padding: 16px;
+  overflow-x: hidden;
 }
 
 .filter-card {
@@ -1118,10 +1188,47 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.filter-select {
+  width: 120px;
+  min-width: 100px;
+}
+
+.search-input {
+  width: 180px;
+  min-width: 120px;
+}
+
+@media (max-width: 768px) {
+  .filter-select,
+  .search-input {
+    width: 100%;
+    flex: 1;
+  }
 }
 
 .table-card {
   margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.table-card :deep(.arco-table) {
+  width: 100%;
+}
+
+.table-card :deep(.arco-table-container) {
+  overflow-x: auto;
+}
+
+.table-card :deep(.arco-table-content-scroll) {
+  overflow-x: auto !important;
+}
+
+.table-card :deep(.arco-table-td) {
+  white-space: nowrap;
 }
 
 .text-gray {
@@ -1228,19 +1335,39 @@ onMounted(() => {
 /* 左右布局的脚本编辑器 */
 .script-editor-layout {
   display: flex;
-  height: 700px;
+  height: 70vh;
+  max-height: 700px;
+  min-height: 400px;
   overflow: hidden;
 }
 
+@media (max-width: 900px) {
+  .script-editor-layout {
+    flex-direction: column;
+    height: auto;
+    max-height: none;
+  }
+}
+
 .editor-left-panel {
-  width: 360px;
-  min-width: 360px;
-  padding: 20px;
+  width: 320px;
+  min-width: 280px;
+  padding: 16px;
   border-right: 1px solid #e5e6eb;
   overflow-y: auto;
   background: #fafafa;
   display: flex;
   flex-direction: column;
+}
+
+@media (max-width: 900px) {
+  .editor-left-panel {
+    width: 100%;
+    min-width: 0;
+    border-right: none;
+    border-bottom: 1px solid #e5e6eb;
+    max-height: 300px;
+  }
 }
 
 .script-form {
@@ -1311,6 +1438,12 @@ onMounted(() => {
   flex-direction: column;
   background: #1e1e1e;
   min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .editor-right-panel {
+    min-height: 350px;
+  }
 }
 
 .editor-header {

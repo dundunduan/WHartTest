@@ -1,8 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
-from django.db.models import Q # For complex queries
-from asgiref.sync import sync_to_async # Import sync_to_async
+from django.db.models import Q
+from asgiref.sync import sync_to_async
 
 from projects.models import Project # Assuming your Project model is in the 'projects' app
 from .serializers import MCPProjectListSerializer
@@ -119,8 +119,6 @@ class MCPToolRunnerView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 from rest_framework import viewsets
-from api_keys.permissions import IsOwnerOrAdmin as APIKeyIsOwnerOrAdmin # Original for API keys
-from .permissions import IsOwnerOrAdmin # Local version supporting both user/owner fields
 
 class RemoteMCPConfigPingView(APIView):
     """
@@ -176,14 +174,14 @@ class RemoteMCPConfigPingView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            logger.info(f"Attempting to retrieve RemoteMCPConfig with ID: {config_id} for user: {request.user.username}")
-            config = await sync_to_async(RemoteMCPConfig.objects.get)(id=config_id, owner=request.user)
+            logger.info(f"Attempting to retrieve RemoteMCPConfig with ID: {config_id}")
+            config = await sync_to_async(RemoteMCPConfig.objects.get)(id=config_id)
             logger.info(f"Successfully retrieved RemoteMCPConfig: {config.name} (ID: {config.id})")
         except RemoteMCPConfig.DoesNotExist:
-            logger.error(f"Remote MCP Configuration with ID {config_id} not found or user {request.user.username} does not have permission.")
+            logger.error(f"Remote MCP Configuration with ID {config_id} not found.")
             return Response({
                 "status": "error", "code": status.HTTP_404_NOT_FOUND,
-                "message": "Remote MCP Configuration not found or you do not have permission to access it.",
+                "message": "Remote MCP Configuration not found.",
                 "data": {}, "errors": {"config_id": ["Configuration not found."]}
             }, status=status.HTTP_404_NOT_FOUND)
 
@@ -257,23 +255,11 @@ class RemoteMCPConfigPingView(APIView):
 class RemoteMCPConfigViewSet(viewsets.ModelViewSet):
     """
     API endpoint that allows Remote MCP Configurations to be viewed or edited.
-    Users can only see and manage their own Remote MCP Configurations.
-    Admins can see and manage all Remote MCP Configurations.
+    全局共享，所有用户都可以访问。
     """
+    queryset = RemoteMCPConfig.objects.all()
     serializer_class = RemoteMCPConfigSerializer
-    permission_classes = [permissions.IsAuthenticated, HasModelPermission, IsOwnerOrAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasModelPermission]
 
     def get_queryset(self):
-        """
-        This view should return a list of all the Remote MCP Configurations
-        for the currently authenticated user.
-        """
-        user = self.request.user
-        # Ensure that even staff users (admins) only see their own configurations
-        return RemoteMCPConfig.objects.filter(owner=user).order_by('-created_at')
-
-    def perform_create(self, serializer):
-        """
-        Automatically associates the Remote MCP Configuration with the creating user.
-        """
-        serializer.save(owner=self.request.user)
+        return RemoteMCPConfig.objects.all().order_by('-created_at')

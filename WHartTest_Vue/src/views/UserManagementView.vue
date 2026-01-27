@@ -227,18 +227,22 @@ const columns = [
     title: '用户ID',
     dataIndex: 'id',
     width: 80,
+    align: 'center',
   },
   {
     title: '用户名',
     dataIndex: 'username',
+    align: 'center',
   },
   {
     title: '邮箱',
     dataIndex: 'email',
+    align: 'center',
   },
   {
     title: '姓名',
     dataIndex: 'name',
+    align: 'center',
     render: ({ record }: { record: User }) => {
       const fullName = [record.first_name, record.last_name].filter(Boolean).join(' ');
       return fullName || '-';
@@ -247,18 +251,21 @@ const columns = [
   {
     title: '管理员',
     dataIndex: 'is_staff',
+    align: 'center',
     render: ({ record }: { record: User }) => record.is_staff ? '是' : '否',
   },
   {
     title: '账户状态',
     dataIndex: 'is_active',
     slotName: 'status',
+    align: 'center',
   },
   {
     title: '操作',
     slotName: 'operations',
     width: 180,
     fixed: 'right',
+    align: 'center',
   },
 ];
 

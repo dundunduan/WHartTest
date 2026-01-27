@@ -119,7 +119,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue';
+import { ref, reactive, onMounted } from 'vue';
 import { Message } from '@arco-design/web-vue';
 import {
   IconEdit,
@@ -136,9 +136,6 @@ import {
   pingRemoteMcpConfig,
   type RemoteMcpConfig
 } from '@/services/remoteMcpConfigService';
-import { useProjectStore } from '@/store/projectStore';
-
-const projectStore = useProjectStore();
 
 // 表格数据和加载状态
 const mcpConfigs = ref<RemoteMcpConfig[]>([]);
@@ -231,10 +228,10 @@ const loadMcpConfigs = async () => {
   } catch (error) {
     console.error('获取远程MCP配置列表失败:', error);
     Message.error('获取远程MCP配置列表失败');
-    mcpConfigs.value = []; // 确保在出错时也设置为空数组
+    mcpConfigs.value = [];
     pagination.total = 0;
   } finally {
-    loading.value = false; // 确保无论如何都会结束加载状态
+    loading.value = false;
   }
 };
 
@@ -294,12 +291,11 @@ const closeModal = () => {
 const handleSubmit = async (done: (closed: boolean) => void) => {
   const result = await formRef.value?.validate();
   if (result) {
-    done(false); // 表单验证失败，不关闭弹窗
+    done(false);
     return;
   }
 
   try {
-    // 解析headers字符串为对象
     let headers = {};
     if (formData.headersStr) {
       try {
@@ -314,7 +310,7 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
     const configData: RemoteMcpConfig = {
       name: formData.name,
       url: formData.url,
-      transport: formData.transport,
+      transport: formData.transport as RemoteMcpConfig['transport'],
       headers,
       is_active: formData.is_active
     };
@@ -403,17 +399,6 @@ const pingConfig = async (record: RemoteMcpConfig) => {
     );
   }
 };
-
-// 监听项目变化，重新加载数据
-watch(() => projectStore.currentProjectId, (newProjectId, oldProjectId) => {
-  if (newProjectId !== oldProjectId) {
-    // 项目切换时重置状态
-    pagination.current = 1;
-
-    // 重新获取远程MCP配置列表
-    loadMcpConfigs();
-  }
-}, { immediate: false });
 
 // 组件挂载时加载数据
 onMounted(() => {

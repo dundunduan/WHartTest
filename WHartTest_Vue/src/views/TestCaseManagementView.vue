@@ -11,9 +11,9 @@
 
       <!-- 右侧内容区域 - 根据视图模式动态切换 -->
       <div class="right-content-area">
-        <!-- 列表视图 -->
+        <!-- 列表视图 - 使用 v-show 保持组件状态（筛选条件等） -->
         <TestCaseList
-          v-if="viewMode === 'list'"
+          v-show="viewMode === 'list'"
           :current-project-id="currentProjectId"
           :selected-module-id="selectedModuleId"
           :module-tree="moduleTreeForForm"
@@ -24,30 +24,37 @@
           @execute-test-case="handleExecuteTestCase"
           @test-case-deleted="handleTestCaseDeleted"
           @module-filter-change="handleModuleSelected"
+          @request-optimization="handleRequestOptimization"
           ref="testCaseListRef"
         />
 
         <!-- 添加/编辑测试用例表单 -->
         <TestCaseForm
-          v-else-if="viewMode === 'add' || viewMode === 'edit'"
+          v-if="viewMode === 'add' || viewMode === 'edit'"
           :is-editing="viewMode === 'edit'"
           :test-case-id="currentEditingTestCaseId"
           :current-project-id="currentProjectId"
           :initial-selected-module-id="selectedModuleId"
           :module-tree="moduleTreeForForm"
+          :test-case-ids="testCaseIdsForNavigation"
           @close="backToList"
           @submit-success="handleFormSubmitSuccess"
+          @navigate="handleNavigateTestCase"
+          @review-status-changed="handleReviewStatusChanged"
         />
 
         <!-- 查看测试用例详情 -->
         <TestCaseDetail
-          v-else-if="viewMode === 'view'"
+          v-if="viewMode === 'view'"
           :test-case-id="currentViewingTestCaseId"
           :current-project-id="currentProjectId"
           :modules="allModules"
+          :test-case-ids="testCaseIdsForNavigation"
           @close="backToList"
           @edit-test-case="showEditTestCaseForm"
           @test-case-deleted="handleViewDetailTestCaseDeleted"
+          @navigate="handleNavigateViewTestCase"
+          @review-status-changed="handleReviewStatusChanged"
         />
       </div>
     </div>
@@ -62,6 +69,12 @@
       v-model:visible="isExecuteModalVisible"
       :test-case="pendingExecuteTestCase"
       @confirm="handleExecuteConfirm"
+    />
+
+    <OptimizationSuggestionModal
+      v-model="isOptimizationModalVisible"
+      :test-case="pendingOptimizationTestCase"
+      @submit="handleOptimizationSubmit"
     />
   </div>
 </template>
@@ -82,10 +95,12 @@ import TestCaseForm from '@/components/testcase/TestCaseForm.vue';
 import TestCaseDetail from '@/components/testcase/TestCaseDetail.vue';
 import GenerateCasesModal from '@/components/testcase/GenerateCasesModal.vue';
 import ExecuteTestCaseModal from '@/components/testcase/ExecuteTestCaseModal.vue';
+import OptimizationSuggestionModal from '@/components/testcase/OptimizationSuggestionModal.vue';
 import {
   sendChatMessageStream
 } from '@/features/langgraph/services/chatService';
 import type { ChatRequest } from '@/features/langgraph/types/chat';
+import { updateTestCaseReviewStatus } from '@/services/testcaseService';
 
 const router = useRouter();
 const projectStore = useProjectStore();
@@ -97,7 +112,10 @@ const currentEditingTestCaseId = ref<number | null>(null);
 const currentViewingTestCaseId = ref<number | null>(null);
 const isGenerateCasesModalVisible = ref(false);
 const isExecuteModalVisible = ref(false);
+const isOptimizationModalVisible = ref(false);
 const pendingExecuteTestCase = ref<TestCase | null>(null);
+const pendingOptimizationTestCase = ref<TestCase | null>(null);
+const testCaseIdsForNavigation = ref<number[]>([]); // 用于编辑页面导航的用例ID列表
 
 const modulePanelRef = ref<InstanceType<typeof ModuleManagementPanel> | null>(null);
 const testCaseListRef = ref<InstanceType<typeof TestCaseList> | null>(null);
@@ -221,13 +239,70 @@ const showAddTestCaseForm = () => {
 };
 
 const showEditTestCaseForm = (testCaseOrId: TestCase | number) => {
+  // 先获取当前筛选后的用例ID列表用于导航（在切换视图之前获取）
+  const ids = testCaseListRef.value?.getTestCaseIds();
+  testCaseIdsForNavigation.value = ids || [];
+  console.log('获取到的用例ID列表:', testCaseIdsForNavigation.value);
+
   currentEditingTestCaseId.value = typeof testCaseOrId === 'number' ? testCaseOrId : testCaseOrId.id;
   viewMode.value = 'edit';
 };
 
+// 处理编辑页面的用例导航
+const handleNavigateTestCase = (testCaseId: number) => {
+  currentEditingTestCaseId.value = testCaseId;
+};
+
 const showViewTestCaseDetail = (testCase: TestCase) => {
+  // 获取当前筛选后的用例ID列表用于导航
+  const ids = testCaseListRef.value?.getTestCaseIds();
+  testCaseIdsForNavigation.value = ids || [];
+
   currentViewingTestCaseId.value = testCase.id;
   viewMode.value = 'view';
+};
+
+// 处理详情页面的用例导航
+const handleNavigateViewTestCase = (testCaseId: number) => {
+  currentViewingTestCaseId.value = testCaseId;
+};
+
+// 处理审核状态变更后刷新导航ID列表并自动跳转
+const handleReviewStatusChanged = async () => {
+  // 获取当前用例ID（编辑模式或查看模式）
+  const currentId = viewMode.value === 'edit'
+    ? currentEditingTestCaseId.value
+    : currentViewingTestCaseId.value;
+
+  // 获取当前用例在旧列表中的索引
+  const oldIndex = currentId ? testCaseIdsForNavigation.value.indexOf(currentId) : -1;
+
+  // 刷新列表数据
+  await testCaseListRef.value?.refreshTestCases();
+
+  // 重新获取筛选后的用例ID列表
+  const newIds = testCaseListRef.value?.getTestCaseIds() || [];
+  testCaseIdsForNavigation.value = newIds;
+
+  // 检查当前用例是否还在新列表中
+  if (currentId && !newIds.includes(currentId)) {
+    // 当前用例不再符合筛选条件，需要自动跳转
+    if (newIds.length === 0) {
+      // 没有符合条件的用例了，返回列表
+      backToList();
+      return;
+    }
+
+    // 尝试跳转到原索引位置的用例，如果超出范围则跳到最后一条
+    const nextIndex = Math.min(oldIndex, newIds.length - 1);
+    const nextId = newIds[Math.max(0, nextIndex)];
+
+    if (viewMode.value === 'edit') {
+      currentEditingTestCaseId.value = nextId;
+    } else {
+      currentViewingTestCaseId.value = nextId;
+    }
+  }
 };
 
 const backToList = () => {
@@ -260,13 +335,16 @@ const showGenerateCasesModal = () => {
 };
 
 const handleGenerateCasesSubmit = async (formData: {
+  generateMode: 'full' | 'title_only' | 'kb_complete' | 'kb_generate',
   requirementDocumentId: string,
   requirementModuleId: string,
   promptId: number,
   useKnowledgeBase: boolean,
   knowledgeBaseId?: string | null,
   testCaseModuleId: number,
-  selectedModule: { title: string, content: string }
+  selectedModule: { title: string, content: string },
+  selectedTestCaseIds: number[],
+  selectedTestCases: TestCase[],
 }) => {
   if (!currentProjectId.value) {
     Message.error('没有有效的项目ID');
@@ -275,8 +353,15 @@ const handleGenerateCasesSubmit = async (formData: {
 
   isGenerateCasesModalVisible.value = false;
 
-  // 构造一个结构清晰、更接近自然语言的 message
-  const message = `
+  let message = '';
+  let notificationTitle = '';
+  let notificationContent = '';
+  let notificationIdPrefix = '';
+
+  switch (formData.generateMode) {
+    case 'full':
+      // 完整生成模式（原有逻辑）
+      message = `
 请根据以下需求模块信息，为我生成测试用例。
 
 ---
@@ -290,25 +375,103 @@ ${formData.selectedModule.content}
 
 请注意：生成的测试用例最终需要被保存在 **项目ID "${currentProjectId.value}"** 下的 **测试用例模块ID "${formData.testCaseModuleId}"** 中。
 (此需求模块来源于需求文档ID: ${formData.requirementDocumentId})
-  `.trim();
+      `.trim();
+      notificationTitle = '生成已开始';
+      notificationContent = '用例生成任务已在后台开始处理。';
+      notificationIdPrefix = 'gen-case';
+      break;
+
+    case 'title_only':
+      // 标题生成模式
+      message = `
+请根据以下需求模块信息，只保存测试用例的标题，禁止生成测试步骤。
+
+---
+[需求模块标题]
+${formData.selectedModule.title}
+
+---
+[需求模块内容]
+${formData.selectedModule.content}
+---
+
+请注意：
+- 只需要生成用例标题，不需要生成详细的测试步骤和预期结果
+- 生成的测试用例最终需要被保存在 **项目ID "${currentProjectId.value}"** 下的 **测试用例模块ID "${formData.testCaseModuleId}"** 中
+(此需求模块来源于需求文档ID: ${formData.requirementDocumentId})
+      `.trim();
+      notificationTitle = '标题生成已开始';
+      notificationContent = '用例标题生成任务已在后台开始处理。';
+      notificationIdPrefix = 'gen-title';
+      break;
+
+    case 'kb_complete':
+      // 知识库补全模式（禁止生成，只能从知识库检索）
+      message = `
+请根据知识库中的相似测试用例，为以下用例补全测试步骤。
+
+【重要约束】
+- 只能从知识库中检索相似用例，直接复用其测试步骤
+- 严禁自行生成或创造任何步骤内容
+- 如果知识库中没有相似用例，请明确告知无法补全，不要自行编造步骤
+- 根据用例名称在知识库中检索最相似的用例
+
+[待补全用例列表]
+${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 模块ID: ${tc.module_id ?? '未分配'}, 模块: ${tc.module_detail || '未分配'}`).join('\n')}
+
+项目ID: ${currentProjectId.value}
+      `.trim();
+      notificationTitle = '补全已开始';
+      notificationContent = '用例补全任务已在后台开始处理。';
+      notificationIdPrefix = 'kb-complete';
+      break;
+
+    case 'kb_generate':
+      // 知识生成模式（基于知识库+需求文档，禁止猜测）
+      message = `
+请根据知识库和需求文档的知识，为以下用例生成测试步骤并保存对应用例中。
+
+【重要约束】
+- 必须基于知识库和需求文档中的实际内容
+- 严禁猜测或假设任何功能行为
+- 生成的步骤必须有知识库或需求文档作为依据
+- 如果无法从知识库和需求文档中找到相关信息，请明确告知
+
+[待生成步骤的用例列表]
+${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 模块ID: ${tc.module_id ?? '未分配'}, 模块: ${tc.module_detail || '未分配'}`).join('\n')}
+
+[需求模块参考]
+标题: ${formData.selectedModule?.title || '无'}
+内容: ${formData.selectedModule?.content || '无'}
+
+项目ID: ${currentProjectId.value}
+      `.trim();
+      notificationTitle = '知识生成已开始';
+      notificationContent = '用例知识生成任务已在后台开始处理。';
+      notificationIdPrefix = 'kb-generate';
+      break;
+  }
 
   const requestData: ChatRequest = {
     message,
     project_id: String(currentProjectId.value),
     prompt_id: formData.promptId,
-    use_knowledge_base: formData.useKnowledgeBase,
+    use_knowledge_base: ['full', 'title_only'].includes(formData.generateMode)
+      ? formData.useKnowledgeBase
+      : ['kb_complete', 'kb_generate'].includes(formData.generateMode),
   };
 
-  // 如果启用了知识库并且选择了具体的知识库，则添加ID
-  if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
+  // 如果需要知识库，添加知识库ID
+  if ((['full', 'title_only'].includes(formData.generateMode) && formData.useKnowledgeBase && formData.knowledgeBaseId) ||
+      (['kb_complete', 'kb_generate'].includes(formData.generateMode) && formData.knowledgeBaseId)) {
     requestData.knowledge_base_id = formData.knowledgeBaseId;
   }
 
   startAutomationTask(
     requestData,
-    '生成已开始',
-    '用例生成任务已在后台开始处理。',
-    'gen-case',
+    notificationTitle,
+    notificationContent,
+    notificationIdPrefix,
     '点此查看生成过程'
   );
 };
@@ -337,11 +500,12 @@ const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) =>
   const message = `
 执行ID为 ${testCase.id} 的测试用例。
 你是一名UI自动化测试人员，需要按照用户的指令执行和验证用例。
-请调用MCP工具完成以下任务：
+请调用工具完成以下任务：
 1. 读取该测试用例所属项目（ID：${currentProjectId.value}）及模块，定位完整的测试用例定义。
-2. 调用工具逐步执行测试用例，并验证每一步的断言。
-3. 每一步执行后截图，并将截图立马上传用例，禁止执行完，再重新执行上传。
-4. 执行结束后告知用户本次测试是否通过，并总结关键截图链接。
+2. 调用工具执行测试用例，并验证相应的断言。
+3. 每一步执行后截图，可以单张上传，也可以批量上传。
+4. 必须上传截图以供查看。
+5. 执行结束后告知用户本次测试是否通过，并总结关键截图链接。
 
 附加信息：
 - 测试用例名称：${testCase.name}
@@ -356,7 +520,7 @@ const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) =>
     use_knowledge_base: false,
     // Playwright 脚本生成参数
     generate_playwright_script: options.generatePlaywrightScript,
-    test_case_id: options.generatePlaywrightScript ? testCase.id : undefined,
+    test_case_id: testCase.id,  // 始终传递，用于截图目录隔离
   };
 
   const notificationContent = options.generatePlaywrightScript
@@ -372,6 +536,78 @@ const handleExecuteConfirm = (options: { generatePlaywrightScript: boolean }) =>
   );
   
   pendingExecuteTestCase.value = null;
+};
+
+const handleRequestOptimization = (testCase: TestCase) => {
+  pendingOptimizationTestCase.value = testCase;
+  isOptimizationModalVisible.value = true;
+};
+
+const handleOptimizationSubmit = async (data: { testCase: TestCase; suggestion: string }) => {
+  if (!currentProjectId.value) {
+    Message.error('没有有效的项目ID');
+    return;
+  }
+
+  // 先更新用例状态为 needs_optimization
+  try {
+    await updateTestCaseReviewStatus(
+      currentProjectId.value,
+      data.testCase.id,
+      'needs_optimization'
+    );
+  } catch (error) {
+    console.error('更新状态失败:', error);
+  }
+
+  // 构建步骤信息
+  let stepsText = '无';
+  if (data.testCase.steps && data.testCase.steps.length > 0) {
+    stepsText = data.testCase.steps.map(step =>
+      `  步骤${step.step_number}: ${step.description} → 预期结果: ${step.expected_result}`
+    ).join('\n');
+  }
+
+  // 构建优化消息
+  const message = `
+优化以下测试用例。
+
+【重要约束】
+- 调用编辑用例工具时必须带上 is_optimization 参数
+- 工具返回成功后即表示任务完成，无需再次编辑。
+
+【用例信息】
+- 用例ID: ${data.testCase.id}
+- 项目ID: ${currentProjectId.value}
+- 名称: ${data.testCase.name}
+- 优先级: ${data.testCase.level}
+- 前置条件: ${data.testCase.precondition || '无'}
+- 模块ID: ${data.testCase.module_id || '未分配'}
+- 步骤:
+${stepsText}
+- 备注: ${data.testCase.notes || '无'}
+
+【用户优化建议】
+${data.suggestion || '请根据测试最佳实践进行全面优化'}
+  `.trim();
+
+  const requestData: ChatRequest = {
+    message,
+    project_id: String(currentProjectId.value),
+    use_knowledge_base: false,
+  };
+
+  startAutomationTask(
+    requestData,
+    '优化已开始',
+    '用例优化任务已在后台开始处理。',
+    'optimize-case',
+    '点此查看优化过程'
+  );
+
+  // 刷新列表以显示状态变化
+  testCaseListRef.value?.refreshTestCases();
+  pendingOptimizationTestCase.value = null;
 };
 
 watch(currentProjectId, (newVal) => {
@@ -407,6 +643,12 @@ onMounted(() => {
   height: 100%;
   gap: 10px;
   overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  .list-view-layout {
+    flex-direction: column;
+  }
 }
 
 /* 右侧内容区域样式 */

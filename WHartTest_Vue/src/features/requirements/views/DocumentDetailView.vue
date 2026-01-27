@@ -11,6 +11,15 @@
         <a-tag :color="getStatusColor(document?.status)" class="status-tag">
           {{ getStatusText(document?.status) }}
         </a-tag>
+        <!-- 评审进度展示 -->
+        <div v-if="document?.status === 'reviewing' && reviewProgress" class="review-progress">
+          <a-progress
+            :percent="reviewProgress.progress"
+            :stroke-width="8"
+            :style="{ width: '180px' }"
+          />
+          <span class="progress-step">{{ reviewProgress.current_step }}</span>
+        </div>
       </div>
       <div class="header-actions">
         <!-- 上传状态优先拆分 -->
@@ -98,6 +107,10 @@
             <span class="label">模块数：</span>
             <span>{{ document?.modules_count || 0 }} 个</span>
           </div>
+          <div v-if="document?.has_images" class="info-item">
+            <span class="label">图片：</span>
+            <a-tag color="arcoblue">{{ document?.image_count || 0 }} 张</a-tag>
+          </div>
           <div class="info-item">
             <span class="label">上传者：</span>
             <span>{{ document?.uploader_name }}</span>
@@ -122,10 +135,12 @@
         <div v-if="document?.status === 'uploaded'" class="upload-hint">
           <a-alert
             type="warning"
-            message="请先进行拆分"
-            description="上传完成后请使用 AI 拆分生成模块，用例生成和后续评审依赖这些模块。"
-            show-icon
-          />
+            :show-icon="true"
+            :closable="false"
+          >
+            <template #title>请先进行拆分</template>
+            <template #content>上传完成后请使用 AI 拆分生成模块，用例生成和后续评审依赖这些模块。</template>
+          </a-alert>
         </div>
       </a-card>
     </div>
@@ -241,10 +256,10 @@
                     {{ module.title }}
                   </span>
                   <div v-if="document.status === 'user_reviewing'" class="label-actions">
-                    <a-button type="text" size="mini" @click.stop="editModuleContent(module)">
+                    <a-button type="text" size="mini" class="module-action-btn edit-btn" @click.stop="editModuleContent(module)">
                       <template #icon><icon-edit /></template>
                     </a-button>
-                    <a-button type="text" size="mini" @click.stop="splitAtCursor(module)">
+                    <a-button type="text" size="mini" class="module-action-btn split-btn" @click.stop="splitAtCursor(module)">
                       <template #icon><icon-scissor /></template>
                     </a-button>
                   </div>
@@ -268,15 +283,14 @@
               <!-- 内容显示区域 -->
               <div
                 v-else
-                class="segment-content"
+                class="segment-content markdown-body"
                 @dblclick="editModuleContent(module)"
                 :style="{
                   borderLeft: `4px solid ${getModuleColor(index)}`,
                   backgroundColor: selectedModules.includes(module.id) ? getModuleColor(index, 0.1) : 'white'
                 }"
-              >
-                {{ module.content }}
-              </div>
+                v-html="renderMarkdownWithImages(module.content)"
+              />
             </div>
           </div>
 
@@ -377,6 +391,7 @@
     <SplitOptionsModal
       :visible="showSplitModal"
       :default-level="splitDefaultLevel"
+      :document-type="document?.document_type"
       @confirm="handleSplitConfirm"
       @cancel="showSplitModal = false"
       @update:visible="showSplitModal = $event"
@@ -411,9 +426,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, h, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Message, Modal } from '@arco-design/web-vue';
+import { Message, Modal, Input as AInput } from '@arco-design/web-vue';
 import {
   IconArrowLeft,
   IconCheckCircle,
@@ -425,6 +440,8 @@ import {
   IconRobot,
   IconRefresh
 } from '@arco-design/web-vue/es/icon';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { RequirementDocumentService } from '../services/requirementService';
 import type {
   DocumentDetail,
@@ -435,10 +452,14 @@ import type {
 } from '../types';
 import { DocumentStatusDisplay, DocumentTypeDisplay } from '../types';
 import SplitOptionsModal from '../components/SplitOptionsModal.vue';
+import { useProjectStore } from '@/store/projectStore';
 
 // 路由
 const route = useRoute();
 const router = useRouter();
+
+// Store
+const projectStore = useProjectStore();
 
 // 响应式数据
 const loading = ref(false);
@@ -478,6 +499,16 @@ const reviewConfig = ref({
   max_workers: 3
 });
 
+// 评审进度跟踪
+const reviewProgress = ref<{
+  progress: number;
+  current_step: string;
+  completed_steps: string[];
+} | null>(null);
+
+// 轮询控制标志
+let isPollingActive = false;
+
 // 计算属性
 const sortedModules = computed(() => {
   if (!document.value?.modules) return [];
@@ -515,6 +546,34 @@ const formatDateTime = (dateTime?: string) => {
   return new Date(dateTime).toLocaleString();
 };
 
+// Markdown 渲染并替换图片占位符
+const renderMarkdownWithImages = (content: string): string => {
+  if (!content) return '';
+
+  // 替换图片占位符为实际的 API URL
+  // 格式: ![图片](docimg://img_001) -> ![图片](/api/requirements/documents/{id}/images/img_001/)
+  const withImageUrls = content.replace(
+    /!\[(.*?)\]\(docimg:\/\/([^)]+)\)/g,
+    (_match, alt, imageId) => {
+      const imageUrl = `/api/requirements/documents/${document.value?.id}/images/${imageId}/`;
+      console.log('[Debug] 图片URL替换:', imageId, '->', imageUrl);
+      return `![${alt}](${imageUrl})`;
+    }
+  );
+
+  // 渲染 Markdown
+  const rawHtml = marked.parse(withImageUrls, { async: false }) as string;
+  console.log('[Debug] Markdown渲染结果:', rawHtml.substring(0, 500));
+
+  // 使用 DOMPurify 清理 HTML 防止 XSS
+  const sanitized = DOMPurify.sanitize(rawHtml, {
+    ADD_TAGS: ['img'],
+    ADD_ATTR: ['src', 'alt', 'title']
+  });
+  console.log('[Debug] DOMPurify处理后:', sanitized.substring(0, 500));
+  return sanitized;
+};
+
 // 获取当前工作流程步骤
 const getCurrentStep = (status: DocumentStatus) => {
   // 上传状态下引导执行拆分
@@ -545,9 +604,15 @@ const loadDocument = async () => {
   loading.value = true;
   try {
     const response = await RequirementDocumentService.getDocumentDetail(documentId);
-    
+
     if (response.status === 'success') {
       document.value = response.data;
+
+      // 如果文档正在评审中且没有正在进行的轮询，自动开始轮询进度
+      if (document.value?.status === 'reviewing' && !isPollingActive) {
+        reviewLoading.value = true;
+        pollDocumentStatus();
+      }
     } else {
       Message.error(response.message || '加载文档详情失败');
     }
@@ -693,46 +758,72 @@ const confirmReview = async () => {
 const pollDocumentStatus = async () => {
   const maxAttempts = 60; // 最多轮询60次（5分钟）
   let attempts = 0;
-  
+  isPollingActive = true;
+
   const poll = async () => {
+    // 如果组件已卸载或轮询被停止，则退出
+    if (!isPollingActive) {
+      return;
+    }
+
     attempts++;
-    
+
     try {
       await loadDocument();
-      
+
+      // 更新进度信息（从最新的评审报告获取）
+      if (document.value?.status === 'reviewing' && document.value?.latest_review) {
+        const latestReview = document.value.latest_review;
+        reviewProgress.value = {
+          progress: latestReview.progress ?? 0,
+          current_step: latestReview.current_step || '处理中...',
+          completed_steps: latestReview.completed_steps || []
+        };
+      }
+
       if (document.value?.status === 'review_completed') {
         // 评审完成
+        isPollingActive = false;
         reviewLoading.value = false;
+        reviewProgress.value = null;
         Message.success('需求评审已完成！');
         return;
       } else if (document.value?.status === 'failed') {
         // 评审失败
+        isPollingActive = false;
         reviewLoading.value = false;
+        reviewProgress.value = null;
         Message.error('需求评审失败，请重试');
         return;
       } else if (attempts >= maxAttempts) {
         // 超时
+        isPollingActive = false;
         reviewLoading.value = false;
+        reviewProgress.value = null;
         Message.warning('评审时间较长，请稍后刷新页面查看结果');
         return;
       }
-      
-      // 继续轮询，每5秒一次
-      setTimeout(poll, 5000);
+
+      // 继续轮询，每3秒一次（更频繁地更新进度）
+      if (isPollingActive) {
+        setTimeout(poll, 3000);
+      }
     } catch (error) {
       console.error('轮询文档状态失败:', error);
       attempts++;
-      if (attempts < maxAttempts) {
-        setTimeout(poll, 5000);
+      if (attempts < maxAttempts && isPollingActive) {
+        setTimeout(poll, 3000);
       } else {
+        isPollingActive = false;
         reviewLoading.value = false;
+        reviewProgress.value = null;
         Message.error('获取评审状态失败');
       }
     }
   };
-  
-  // 首次轮询延迟3秒
-  setTimeout(poll, 3000);
+
+  // 首次轮询延迟2秒
+  setTimeout(poll, 2000);
 };
 
 // 模块展开/收起
@@ -754,10 +845,51 @@ const editModule = (module: DocumentModule) => {
 
 // 保存模块
 const saveModule = async () => {
-  // TODO: 实现模块保存逻辑
-  Message.success('模块保存成功');
-  editModalVisible.value = false;
-  await loadDocument();
+  if (!document.value || !editForm.value.title?.trim()) {
+    Message.warning('请输入模块标题');
+    return;
+  }
+
+  try {
+    if (currentEditingModule.value) {
+      // 编辑已有模块 - 使用 rename 操作
+      const response = await RequirementDocumentService.moduleOperation(document.value.id, {
+        operation: 'rename',
+        target_modules: [currentEditingModule.value.id],
+        new_module_data: {
+          title: editForm.value.title.trim()
+        }
+      });
+      if (response.status === 'success') {
+        Message.success('模块更新成功');
+      } else {
+        Message.error(response.message || '更新模块失败');
+        return;
+      }
+    } else {
+      // 新建模块
+      const response = await RequirementDocumentService.moduleOperation(document.value.id, {
+        operation: 'create',
+        target_modules: [],
+        new_module_data: {
+          title: editForm.value.title.trim(),
+          content: editForm.value.content || '',
+          order: editForm.value.order
+        }
+      });
+      if (response.status === 'success') {
+        Message.success('模块创建成功');
+      } else {
+        Message.error(response.message || '创建模块失败');
+        return;
+      }
+    }
+    editModalVisible.value = false;
+    await loadDocument();
+  } catch (error) {
+    console.error('保存模块失败:', error);
+    Message.error('保存模块失败');
+  }
 };
 
 // 取消模态框编辑
@@ -840,10 +972,40 @@ const startEditTitle = (module: DocumentModule) => {
 };
 
 const saveTitleModal = async () => {
-  if (editingTitle.value.trim() && currentEditingTitleModule.value) {
-    // TODO: 调用API保存标题
-    currentEditingTitleModule.value.title = editingTitle.value.trim();
-    Message.success('标题已更新');
+  if (!document.value || !currentEditingTitleModule.value) {
+    cancelTitleEdit();
+    return;
+  }
+
+  const newTitle = editingTitle.value.trim();
+  if (!newTitle) {
+    Message.warning('请输入标题');
+    return;
+  }
+
+  // 如果标题没有变化，直接取消编辑
+  if (newTitle === currentEditingTitleModule.value.title) {
+    cancelTitleEdit();
+    return;
+  }
+
+  try {
+    const response = await RequirementDocumentService.moduleOperation(document.value.id, {
+      operation: 'update',
+      target_modules: [currentEditingTitleModule.value.id],
+      new_module_data: {
+        title: newTitle
+      }
+    });
+    if (response.status === 'success') {
+      currentEditingTitleModule.value.title = newTitle;
+      Message.success('标题已更新');
+    } else {
+      Message.error(response.message || '更新标题失败');
+    }
+  } catch (error) {
+    console.error('更新标题失败:', error);
+    Message.error('更新标题失败');
   }
   cancelTitleEdit();
 };
@@ -863,10 +1025,37 @@ const editModuleContent = (module: DocumentModule) => {
 };
 
 const saveContent = async (module: DocumentModule) => {
-  if (editingContent.value.trim()) {
-    // TODO: 调用API保存内容
-    module.content = editingContent.value.trim();
-    Message.success('内容已更新');
+  if (!document.value) return;
+
+  const newContent = editingContent.value.trim();
+  if (!newContent) {
+    cancelContentEdit();
+    return;
+  }
+
+  // 如果内容没有变化，直接取消编辑
+  if (newContent === module.content) {
+    cancelContentEdit();
+    return;
+  }
+
+  try {
+    const response = await RequirementDocumentService.moduleOperation(document.value.id, {
+      operation: 'update',
+      target_modules: [module.id],
+      new_module_data: {
+        content: newContent
+      }
+    });
+    if (response.status === 'success') {
+      module.content = newContent;
+      Message.success('内容已更新');
+    } else {
+      Message.error(response.message || '更新内容失败');
+    }
+  } catch (error) {
+    console.error('更新内容失败:', error);
+    Message.error('更新内容失败');
   }
   cancelContentEdit();
 };
@@ -891,10 +1080,50 @@ const mergeSelectedModules = async () => {
     Message.warning('请至少选择两个模块进行合并');
     return;
   }
-  // TODO: 实现模块合并逻辑
-  Message.success(`已合并 ${selectedModules.value.length} 个模块`);
-  clearSelection();
-  await loadDocument();
+  if (!document.value) return;
+
+  // 获取选中模块的标题，用于生成默认合并标题
+  const selectedModulesList = document.value.modules.filter(m => selectedModules.value.includes(m.id));
+  const defaultTitle = selectedModulesList[0]?.title || '合并模块';
+
+  // 弹出输入框让用户输入合并后的标题
+  const inputValue = ref(defaultTitle);
+  Modal.confirm({
+    title: '合并模块',
+    content: () => h('div', [
+      h('p', { style: 'margin-bottom: 8px' }, `将合并 ${selectedModules.value.length} 个模块，请输入合并后的标题：`),
+      h(AInput, {
+        modelValue: inputValue.value,
+        'onUpdate:modelValue': (val: string) => { inputValue.value = val; },
+        placeholder: '请输入合并后的模块标题'
+      })
+    ]),
+    okText: '确认合并',
+    cancelText: '取消',
+    onOk: async () => {
+      if (!inputValue.value.trim()) {
+        Message.warning('请输入合并后的标题');
+        return Promise.reject();
+      }
+      try {
+        const response = await RequirementDocumentService.moduleOperation(document.value!.id, {
+          operation: 'merge',
+          target_modules: selectedModules.value,
+          merge_title: inputValue.value.trim()
+        });
+        if (response.status === 'success') {
+          Message.success(`已合并 ${selectedModules.value.length} 个模块`);
+          clearSelection();
+          await loadDocument();
+        } else {
+          Message.error(response.message || '合并模块失败');
+        }
+      } catch (error) {
+        console.error('合并模块失败:', error);
+        Message.error('合并模块失败');
+      }
+    }
+  });
 };
 
 const deleteSelectedModules = async () => {
@@ -902,10 +1131,35 @@ const deleteSelectedModules = async () => {
     Message.warning('请选择要删除的模块');
     return;
   }
-  // TODO: 实现批量删除逻辑
-  Message.success(`已删除 ${selectedModules.value.length} 个模块`);
-  clearSelection();
-  await loadDocument();
+  if (!document.value) return;
+
+  Modal.warning({
+    title: '确认删除',
+    content: `确定要删除选中的 ${selectedModules.value.length} 个模块吗？此操作不可恢复。`,
+    okText: '确认删除',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        // 逐个删除选中的模块
+        for (const moduleId of selectedModules.value) {
+          const response = await RequirementDocumentService.moduleOperation(document.value!.id, {
+            operation: 'delete',
+            target_modules: [moduleId]
+          });
+          if (response.status !== 'success') {
+            Message.error(response.message || '删除模块失败');
+            return;
+          }
+        }
+        Message.success(`已删除 ${selectedModules.value.length} 个模块`);
+        clearSelection();
+        await loadDocument();
+      } catch (error) {
+        console.error('删除模块失败:', error);
+        Message.error('删除模块失败');
+      }
+    }
+  });
 };
 
 const clearSelection = () => {
@@ -915,6 +1169,22 @@ const clearSelection = () => {
 // 生命周期
 onMounted(() => {
   loadDocument();
+});
+
+// 监听项目变化 - 当在详情页切换项目时，返回到列表页
+watch(
+  () => projectStore.currentProjectId,
+  (newProjectId, oldProjectId) => {
+    if (newProjectId && oldProjectId && newProjectId !== oldProjectId) {
+      // 项目切换时，返回到需求文档列表页
+      router.push('/requirements');
+    }
+  }
+);
+
+// 组件卸载时停止轮询
+onBeforeUnmount(() => {
+  isPollingActive = false;
 });
 </script>
 
@@ -942,6 +1212,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 16px; /* 元素之间的间距 */
+  min-width: 0; /* 允许flex子元素收缩到小于内容宽度 */
+  overflow: hidden;
 }
 
 .back-button {
@@ -954,6 +1226,7 @@ onMounted(() => {
   font-weight: 600;
   color: #1d2129;
   flex: 1; /* 标题占据剩余空间 */
+  min-width: 0; /* 允许标题收缩 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis; /* 长标题显示省略号 */
@@ -962,6 +1235,23 @@ onMounted(() => {
 .status-tag {
   flex-shrink: 0; /* 防止标签被压缩 */
   margin-right: 8px; /* 增加状态标签右侧额外间距 */
+}
+
+.review-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #e8f4ff 0%, #f0f5ff 100%);
+  border-radius: 8px;
+  border: 1px solid #b8daff;
+}
+
+.progress-step {
+  font-size: 13px;
+  color: #1890ff;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .header-actions {
@@ -1401,6 +1691,62 @@ onMounted(() => {
   gap: 4px;
 }
 
+/* 模块标题框内的按钮样式 - 白色主题 */
+.label-actions .module-action-btn {
+  color: #ffffff !important; /* 按钮颜色为白色，使用important强制覆盖 */
+  background-color: rgba(255, 255, 255, 0.2) !important; /* 半透明白色背景 */
+  border-radius: 4px;
+  padding: 4px 8px;
+  transition: all 0.2s ease;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important; /* 白色边框 */
+}
+
+.label-actions .module-action-btn:hover {
+  color: #ffffff !important; /* 悬停时保持白色 */
+  background-color: rgba(255, 255, 255, 0.3) !important; /* 悬停时背景色加深 */
+  border-color: rgba(255, 255, 255, 0.5) !important; /* 悬停时边框颜色加深 */
+  transform: translateY(-1px); /* 悬停时轻微上浮 */
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.2); /* 悬停时添加白色阴影 */
+}
+
+.label-actions .module-action-btn:active {
+  transform: translateY(0); /* 点击时恢复原位 */
+  box-shadow: 0 1px 4px rgba(255, 255, 255, 0.1); /* 点击时阴影变小 */
+}
+
+/* 强制覆盖图标颜色 - 使用更具体的选择器 */
+.label-actions .module-action-btn .arco-icon,
+.label-actions .module-action-btn svg,
+.label-actions .module-action-btn i,
+.label-actions .edit-btn .arco-icon-edit,
+.label-actions .split-btn .arco-icon-scissor {
+  color: #ffffff !important;
+  fill: #ffffff !important;
+  stroke: #ffffff !important;
+}
+
+/* 确保所有子元素都继承白色 */
+.label-actions .module-action-btn * {
+  color: #ffffff !important;
+  fill: #ffffff !important;
+  stroke: #ffffff !important;
+}
+
+/* 针对编辑按钮和拆分按钮的统一白色样式 */
+.label-actions .edit-btn,
+.label-actions .split-btn {
+  color: #ffffff !important;
+  background-color: rgba(255, 255, 255, 0.2) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.label-actions .edit-btn:hover,
+.label-actions .split-btn:hover {
+  color: #ffffff !important;
+  background-color: rgba(255, 255, 255, 0.3) !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+}
+
 .segment-content {
   white-space: pre-wrap;
   padding: 12px;
@@ -1413,6 +1759,108 @@ onMounted(() => {
   color: #333;
   min-height: 40px;
   border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* Markdown 渲染样式 */
+.segment-content.markdown-body {
+  white-space: normal;
+}
+
+.segment-content.markdown-body :deep(p) {
+  margin: 0 0 1em 0;
+}
+
+.segment-content.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.segment-content.markdown-body :deep(h1),
+.segment-content.markdown-body :deep(h2),
+.segment-content.markdown-body :deep(h3),
+.segment-content.markdown-body :deep(h4),
+.segment-content.markdown-body :deep(h5),
+.segment-content.markdown-body :deep(h6) {
+  margin: 1em 0 0.5em 0;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.segment-content.markdown-body :deep(h1:first-child),
+.segment-content.markdown-body :deep(h2:first-child),
+.segment-content.markdown-body :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.segment-content.markdown-body :deep(ul),
+.segment-content.markdown-body :deep(ol) {
+  margin: 0.5em 0;
+  padding-left: 2em;
+}
+
+.segment-content.markdown-body :deep(li) {
+  margin: 0.25em 0;
+}
+
+.segment-content.markdown-body :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+.segment-content.markdown-body :deep(th),
+.segment-content.markdown-body :deep(td) {
+  border: 1px solid #e5e6eb;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.segment-content.markdown-body :deep(th) {
+  background: #f7f8fa;
+  font-weight: 600;
+}
+
+.segment-content.markdown-body :deep(code) {
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.9em;
+}
+
+.segment-content.markdown-body :deep(pre) {
+  background: #f5f5f5;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+
+.segment-content.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.segment-content.markdown-body :deep(blockquote) {
+  border-left: 4px solid #e5e6eb;
+  padding-left: 16px;
+  margin: 1em 0;
+  color: #666;
+}
+
+/* 图片样式 */
+.segment-content.markdown-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 12px 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  cursor: zoom-in;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.segment-content.markdown-body :deep(img:hover) {
+  transform: scale(1.02);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
 .inline-content-edit {
@@ -1482,6 +1930,80 @@ onMounted(() => {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #e5e6eb;
+}
+
+/* 调整警告提示框的布局，确保图标和文字完美对齐并垂直居中 */
+.upload-hint :deep(.arco-alert) {
+  padding: 14px 20px; /* 统一上下内边距 */
+  min-height: 52px; /* 设置合适的最小高度 */
+  width: 100%;
+  display: flex;
+  align-items: center; /* 垂直居中对齐 */
+  gap: 10px; /* 图标与内容之间的间距 */
+}
+
+/* 确保警告图标完美垂直居中 */
+.upload-hint :deep(.arco-alert-icon) {
+  font-size: 16px; /* 适当大小的图标 */
+  margin: 0;
+  display: flex;
+  align-items: center; /* 图标垂直居中 */
+  height: auto;
+  line-height: 1; /* 确保图标行高一致 */
+  flex-shrink: 0; /* 防止图标被压缩 */
+}
+
+/* 优化内容区域的布局 */
+.upload-hint :deep(.arco-alert-content-wrapper) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center; /* 内容垂直居中 */
+  align-items: flex-start;
+  gap: 3px; /* 标题与内容之间的合适间距 */
+}
+
+/* 标题样式优化（"请先进行拆分"）*/
+.upload-hint :deep(.arco-alert-title) {
+  font-size: 14px; /* 适中的字体大小 */
+  font-weight: 600;
+  margin: 0;
+  line-height: 1.4; /* 合适的行高 */
+  display: flex;
+  align-items: center; /* 标题文字垂直居中 */
+  color: #333; /* 确保文字颜色清晰 */
+}
+
+/* 内容样式优化（提示文字）*/
+.upload-hint :deep(.arco-alert-content) {
+  font-size: 12px; /* 稍小的字体大小 */
+  line-height: 1.4;
+  margin: 0;
+  color: #666; /* 提示文字用稍浅的颜色 */
+  display: flex;
+  align-items: center; /* 内容文字垂直居中 */
+}
+
+/* 特殊处理：确保整体内容完美居中 */
+.upload-hint :deep(.arco-alert-body) {
+  display: flex;
+  align-items: center; /* 整体内容垂直居中 */
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* 移除可能存在的额外边距 */
+.upload-hint :deep(.arco-alert-with-title) {
+  align-items: center; /* 有标题时也保持居中 */
+}
+
+/* 调整警告提示框的内边距和高度 */
+.upload-hint :deep(.arco-alert) {
+  padding: 20px 24px;
+  max-height: 30px;
+  width: 100%;
+  align-items: center;
 }
 
 /* 评审报告区域样式 */
