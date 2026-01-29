@@ -85,8 +85,10 @@ docker-compose up -d
 - 项目讨论区
 - 添加微信时请备注github
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/b72b71ee-ff6e-4595-9bb1-c02e61951429" />
-<img src="./docs/developer-guide/image.png" alt="contact" width="400">
 
+qq群：
+1. 858530110（已满）
+2. 1017708746
 ---
 
 **WHartTest** - AI驱动测试用例生成，让测试更智能，让开发更高效！
